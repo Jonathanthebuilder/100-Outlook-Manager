@@ -1,0 +1,30 @@
+{
+  "name": "outlook-mailbox-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "npm run build && node scripts/serve-dist.mjs",
+    "dev:ui": "vite",
+    "build": "tsc && vite build && node scripts/make-standalone.mjs",
+    "preview": "vite preview",
+    "start": "node scripts/serve-dist.mjs",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "vite": "^7.2.7",
+    "typescript": "^5.9.3",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "lucide-react": "^0.562.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "vitest": "^4.0.16"
+  }
+}
