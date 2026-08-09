@@ -494,9 +494,12 @@ button {
 
 .mailbox-row {
   display: grid;
+  grid-template-rows: auto auto;
+  align-content: center;
   gap: 4px;
   width: 100%;
-  min-height: 56px;
+  min-width: 0;
+  min-height: 64px;
   padding: 10px 12px;
   text-align: left;
   border: 1px solid #e1e8ee;
@@ -506,16 +509,21 @@ button {
 }
 
 .mailbox-row span {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   color: #15222d;
   font-size: 14px;
   font-weight: 680;
+  line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .mailbox-row small {
+  display: block;
   color: #738290;
+  line-height: 1.35;
 }
 
 .mailbox-row.selected {
@@ -1027,6 +1035,12 @@ button {
     border-bottom: 1px solid #e3e9ee;
   }
 
+  .mailbox-row span {
+    overflow: visible;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .split-grid.has-selection .detail-panel {
     order: -1;
     border-bottom: 1px solid #e3e9ee;
@@ -1129,6 +1143,23 @@ button {
 }
 
 @media (max-width: 560px) {
+  .mailbox-list {
+    padding: 10px;
+  }
+
+  .mailbox-row {
+    padding: 9px 11px;
+  }
+
+  .mailbox-row span {
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .mailbox-row small {
+    font-size: 12px;
+  }
+
   .stats-grid {
     gap: 8px;
   }
