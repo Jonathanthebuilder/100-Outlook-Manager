@@ -4,6 +4,8 @@ import {
   formatMailboxCredential,
   getInventoryStats,
   getMailboxGroups,
+  markMailboxAvailable,
+  markMailboxPrepared,
   markMailboxUsed,
   parseMailboxText,
   pickRandomAvailable,
@@ -49,10 +51,11 @@ describe('mailbox ledger parsing', () => {
     expect(parsed.records[2].email).toBe('BrendaExample2002@outlook.es');
   });
 
-  it('exports only available mailboxes in original credential format', () => {
+  it('exports every unsold mailbox in original credential format', () => {
     const parsed = parseMailboxText([alphaRaw, usedRaw, betaRaw].join('\n'));
+    const prepared = markMailboxPrepared(parsed.records, parsed.records[0].id, 'Perplexity');
 
-    expect(exportAvailableMailboxes(parsed.records)).toBe([alphaRaw, betaRaw.replace('邮箱：', '')].join('\n'));
+    expect(exportAvailableMailboxes(prepared)).toBe([alphaRaw, betaRaw.replace('邮箱：', '')].join('\n'));
   });
 
   it('formats one mailbox as a complete deliverable credential line', () => {
@@ -90,10 +93,10 @@ describe('mailbox ledger workflow helpers', () => {
     );
 
     expect(getMailboxGroups(parsed.records)).toEqual([
-      { key: 'A|outlook.com', firstLetter: 'A', domain: 'outlook.com', availableCount: 1, usedCount: 0 },
-      { key: 'A|outlook.es', firstLetter: 'A', domain: 'outlook.es', availableCount: 1, usedCount: 0 },
-      { key: 'B|outlook.es', firstLetter: 'B', domain: 'outlook.es', availableCount: 1, usedCount: 0 },
-      { key: 'C|outlook.com', firstLetter: 'C', domain: 'outlook.com', availableCount: 0, usedCount: 1 },
+      { key: 'A|outlook.com', firstLetter: 'A', domain: 'outlook.com', availableCount: 1, preparedCount: 0, usedCount: 0 },
+      { key: 'A|outlook.es', firstLetter: 'A', domain: 'outlook.es', availableCount: 1, preparedCount: 0, usedCount: 0 },
+      { key: 'B|outlook.es', firstLetter: 'B', domain: 'outlook.es', availableCount: 1, preparedCount: 0, usedCount: 0 },
+      { key: 'C|outlook.com', firstLetter: 'C', domain: 'outlook.com', availableCount: 0, preparedCount: 0, usedCount: 1 },
     ]);
   });
 
@@ -129,12 +132,53 @@ describe('mailbox ledger workflow helpers', () => {
     expect(exportAvailableMailboxes(updated)).toBe(betaRaw.replace('邮箱：', ''));
   });
 
+  it('moves a mailbox through prepared and available states with preparation metadata', () => {
+    const parsed = parseMailboxText([alphaRaw].join('\n'));
+    const prepared = markMailboxPrepared(
+      parsed.records,
+      parsed.records[0].id,
+      'Perplexity',
+      '免费账号已注册',
+      '2026-08-14T09:00:00.000Z',
+    );
+
+    expect(prepared[0]).toMatchObject({
+      status: 'prepared',
+      preparedFor: 'Perplexity',
+      preparationRemark: '免费账号已注册',
+      preparedAt: '2026-08-14T09:00:00.000Z',
+    });
+    expect(getMailboxGroups(prepared)[0]).toMatchObject({ availableCount: 0, preparedCount: 1, usedCount: 0 });
+    expect(pickRandomAvailable(prepared, { status: 'prepared' }, () => 0)?.id).toBe(prepared[0].id);
+
+    const restored = markMailboxAvailable(prepared, prepared[0].id);
+    expect(restored[0]).toMatchObject({ status: 'available' });
+    expect(restored[0]).not.toHaveProperty('preparedFor');
+    expect(restored[0]).not.toHaveProperty('preparedAt');
+  });
+
+  it('keeps preparation history when a prepared mailbox is sold', () => {
+    const parsed = parseMailboxText([alphaRaw].join('\n'));
+    const prepared = markMailboxPrepared(parsed.records, parsed.records[0].id, 'Perplexity', '', '2026-08-14T09:00:00.000Z');
+    const sold = markMailboxUsed(prepared, prepared[0].id, 'Order 1001', '2026-08-14T10:00:00.000Z');
+
+    expect(sold[0]).toMatchObject({
+      status: 'used',
+      preparedFor: 'Perplexity',
+      preparedAt: '2026-08-14T09:00:00.000Z',
+      remark: 'Order 1001',
+      usedAt: '2026-08-14T10:00:00.000Z',
+    });
+  });
+
   it('summarizes inventory counts', () => {
     const parsed = parseMailboxText([alphaRaw, betaRaw, usedRaw].join('\n'));
 
     expect(getInventoryStats(parsed.records)).toEqual({
       total: 3,
       available: 2,
+      prepared: 0,
+      unsold: 2,
       used: 1,
       outlookCom: 2,
       outlookEs: 1,

@@ -147,6 +147,13 @@ button {
   box-shadow: 0 8px 18px rgba(31, 95, 196, 0.18);
 }
 
+.button.prepared {
+  border-color: #258264;
+  background: #258264;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(37, 130, 100, 0.17);
+}
+
 .button.subtle {
   background: #edf4fb;
   border-color: #d5e5f5;
@@ -173,7 +180,7 @@ button {
 
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 0;
   margin-bottom: 16px;
   padding: 6px;
@@ -221,6 +228,11 @@ button {
 .stat-card.good .stat-icon {
   background: #e6f6ed;
   color: #167545;
+}
+
+.stat-card.prepared .stat-icon {
+  background: #e5f6f0;
+  color: #167158;
 }
 
 .stat-card.used .stat-icon {
@@ -428,6 +440,40 @@ button {
 
 .panel-header p {
   font-size: 13px;
+}
+
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.inventory-tabs {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #d9e2ea;
+  border-radius: 10px;
+  background: #f4f7f9;
+}
+
+.inventory-tabs button {
+  min-height: 34px;
+  border-radius: 7px;
+  padding: 0 11px;
+  background: transparent;
+  color: #607080;
+  font-size: 12px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.inventory-tabs button.active {
+  background: #ffffff;
+  color: #1d5fb7;
+  box-shadow: 0 3px 10px rgba(35, 62, 87, 0.09);
 }
 
 .group-list {
@@ -664,6 +710,97 @@ button {
   max-height: 520px;
   overflow: auto;
   padding-right: 3px;
+}
+
+.preparation-card {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 18px;
+  padding: 15px;
+  border: 1px solid #dce4eb;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+
+.preparation-card.prepared {
+  border-color: #b9dfd2;
+  background: #f1faf7;
+}
+
+.preparation-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.preparation-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.preparation-heading strong {
+  color: #263743;
+  font-size: 15px;
+}
+
+.preparation-heading > div span {
+  color: #6b7b89;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.status-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 25px;
+  border-radius: 999px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 780;
+}
+
+.status-pill.pending {
+  background: #edf2f6;
+  color: #536878;
+}
+
+.status-pill.prepared {
+  background: #d9f2e9;
+  color: #176b53;
+}
+
+.preparation-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.7fr) minmax(220px, 1.3fr);
+  gap: 10px;
+}
+
+.preparation-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.preparation-form label span {
+  color: #536574;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.preparation-form input {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid #d5dfe7;
+  border-radius: 9px;
+  padding: 0 11px;
+  outline: none;
+}
+
+.preparation-form input:focus {
+  border-color: #258264;
+  box-shadow: 0 0 0 3px rgba(37, 130, 100, 0.11);
 }
 
 .mail-card {
@@ -926,6 +1063,12 @@ button {
   font-size: 13px;
 }
 
+.used-row .used-preparation {
+  color: #21715a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .used-row small {
   color: #8592a0;
 }
@@ -966,7 +1109,7 @@ button {
 
 @media (max-width: 1180px) {
   .stats-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .workspace {
@@ -1016,6 +1159,10 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .group-panel {
+    position: static;
+  }
+
   .stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1024,10 +1171,13 @@ button {
     display: none;
   }
 
-  .group-list,
   .mailbox-list,
   .used-list {
     max-height: none;
+  }
+
+  .group-list {
+    max-height: 280px;
   }
 
   .mailbox-list {
@@ -1062,6 +1212,19 @@ button {
 
   .detail-empty {
     min-height: 220px;
+  }
+
+  .panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .panel-header-actions {
+    justify-content: space-between;
+  }
+
+  .preparation-form {
+    grid-template-columns: 1fr;
   }
 
   .mail-filter-row {
@@ -1143,6 +1306,21 @@ button {
 }
 
 @media (max-width: 560px) {
+  .panel-header-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .inventory-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .inventory-tabs button {
+    padding-inline: 6px;
+  }
+
   .mailbox-list {
     padding: 10px;
   }

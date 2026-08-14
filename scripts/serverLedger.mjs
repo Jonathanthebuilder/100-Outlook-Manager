@@ -61,10 +61,19 @@ export function validateRecords(records) {
       typeof record.refreshToken === 'string' &&
       typeof record.domain === 'string' &&
       typeof record.firstLetter === 'string' &&
-      (record.status === 'available' || record.status === 'used') &&
+      ['available', 'prepared', 'used'].includes(record.status) &&
       typeof record.remark === 'string' &&
       typeof record.sourceLineNumber === 'number' &&
       typeof record.rawCredential === 'string' &&
+      (record.preparedFor === undefined || typeof record.preparedFor === 'string') &&
+      (record.preparationRemark === undefined || typeof record.preparationRemark === 'string') &&
+      (record.preparedAt === undefined || typeof record.preparedAt === 'string') &&
+      (record.status !== 'prepared' || (
+        typeof record.preparedFor === 'string' &&
+        record.preparedFor.trim().length > 0 &&
+        typeof record.preparedAt === 'string' &&
+        record.preparedAt.length > 0
+      )) &&
       (record.usedAt === undefined || typeof record.usedAt === 'string') &&
       (record.importedAt === undefined || typeof record.importedAt === 'string') &&
       (record.tokenCheckedAt === undefined || typeof record.tokenCheckedAt === 'string') &&
@@ -78,6 +87,10 @@ export function validateRecords(records) {
   });
 
   return records;
+}
+
+export function isUnsoldRecord(record) {
+  return record?.status === 'available' || record?.status === 'prepared';
 }
 
 export function readJsonBody(req) {
@@ -219,7 +232,7 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
         sendJson(res, 404, { error: 'Mailbox record not found' });
         return true;
       }
-      if (record.status !== 'available') {
+      if (!isUnsoldRecord(record)) {
         sendJson(res, 409, { error: '已售账号默认禁止读取邮件' });
         return true;
       }
@@ -262,7 +275,7 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
         sendJson(res, 404, { error: 'Mailbox record not found' });
         return true;
       }
-      if (record.status !== 'available') {
+      if (!isUnsoldRecord(record)) {
         sendJson(res, 409, { error: '已售账号禁止刷新 Token' });
         return true;
       }
@@ -290,7 +303,7 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
       const max = Math.min(Math.max(Number.parseInt(body.limit, 10) || 25, 1), 100);
       const records = await store.load();
       const targets = records
-        .filter((record) => record.status === 'available')
+        .filter(isUnsoldRecord)
         .sort((left, right) => {
           const leftChecked = left.tokenCheckedAt || '';
           const rightChecked = right.tokenCheckedAt || '';
@@ -400,6 +413,82 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
       return true;
     }
 
+    const prepareMatch = parsedUrl.pathname.match(/^\/api\/records\/([^/]+)\/prepare$/);
+    if (req.method === 'POST' && prepareMatch) {
+      const body = await readJsonBody(req);
+      const preparedFor = String(body.preparedFor ?? '').trim();
+      const preparationRemark = String(body.preparationRemark ?? '').trim();
+
+      if (!preparedFor) {
+        sendJson(res, 400, { error: '准备服务不能为空' });
+        return true;
+      }
+
+      const id = decodeURIComponent(prepareMatch[1]);
+      const updatedRecords = await store.update((records) => {
+        const record = records.find((candidate) => candidate.id === id);
+        if (!record) {
+          const error = new Error('Mailbox record not found');
+          error.statusCode = 404;
+          error.records = records;
+          throw error;
+        }
+        if (record.status !== 'available') {
+          const error = new Error(record.status === 'prepared' ? 'Mailbox record is already prepared' : '已售账号不能标记为准备状态');
+          error.statusCode = 409;
+          error.records = records;
+          throw error;
+        }
+
+        return records.map((candidate) => candidate.id === id
+          ? {
+              ...candidate,
+              status: 'prepared',
+              preparedFor,
+              preparationRemark,
+              preparedAt: now(),
+            }
+          : candidate);
+      });
+
+      sendJson(res, 200, { records: updatedRecords });
+      return true;
+    }
+
+    const unprepareMatch = parsedUrl.pathname.match(/^\/api\/records\/([^/]+)\/unprepare$/);
+    if (req.method === 'POST' && unprepareMatch) {
+      const id = decodeURIComponent(unprepareMatch[1]);
+      const updatedRecords = await store.update((records) => {
+        const record = records.find((candidate) => candidate.id === id);
+        if (!record) {
+          const error = new Error('Mailbox record not found');
+          error.statusCode = 404;
+          error.records = records;
+          throw error;
+        }
+        if (record.status !== 'prepared') {
+          const error = new Error(record.status === 'used' ? '已售账号不能撤销准备状态' : 'Mailbox record is not prepared');
+          error.statusCode = 409;
+          error.records = records;
+          throw error;
+        }
+
+        return records.map((candidate) => {
+          if (candidate.id !== id) return candidate;
+          const {
+            preparedFor: _preparedFor,
+            preparationRemark: _preparationRemark,
+            preparedAt: _preparedAt,
+            ...rest
+          } = candidate;
+          return { ...rest, status: 'available' };
+        });
+      });
+
+      sendJson(res, 200, { records: updatedRecords });
+      return true;
+    }
+
     const useMatch = parsedUrl.pathname.match(/^\/api\/records\/([^/]+)\/use$/);
     if (req.method === 'POST' && useMatch) {
       const body = await readJsonBody(req);
@@ -421,7 +510,7 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
           throw error;
         }
 
-        if (record.status !== 'available') {
+        if (!isUnsoldRecord(record)) {
           const error = new Error('Mailbox record is already used');
           error.statusCode = 409;
           error.records = records;

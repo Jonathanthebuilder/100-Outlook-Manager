@@ -25,6 +25,9 @@ import {
   formatMailboxCredential,
   getInventoryStats,
   getMailboxGroups,
+  isUnsoldMailbox,
+  markMailboxAvailable,
+  markMailboxPrepared,
   markMailboxUsed,
   parseMailboxText,
   pickRandomAvailable,
@@ -135,6 +138,8 @@ interface DeviceCodeInfo {
   interval: number;
 }
 
+type InventoryView = 'unsold' | 'available' | 'prepared';
+
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const detailPanelRef = useRef<HTMLDivElement>(null);
@@ -142,7 +147,10 @@ function App() {
   const [parseErrors, setParseErrors] = useState<ReturnType<typeof parseMailboxText>['errors']>([]);
   const [selectedGroupKey, setSelectedGroupKey] = useState<string>('all');
   const [selectedMailboxId, setSelectedMailboxId] = useState<string>('');
+  const [inventoryView, setInventoryView] = useState<InventoryView>('unsold');
   const [remark, setRemark] = useState('');
+  const [preparationService, setPreparationService] = useState('Perplexity');
+  const [preparationRemark, setPreparationRemark] = useState('');
   const [search, setSearch] = useState('');
   const [copyStatus, setCopyStatus] = useState<string>('');
   const [syncStatus, setSyncStatus] = useState<string>('正在读取共享台账...');
@@ -167,8 +175,8 @@ function App() {
 
   const stats = useMemo(() => getInventoryStats(records), [records]);
   const tokenStats = useMemo(() => ({
-    healthy: records.filter((record) => record.status === 'available' && record.tokenStatus === 'healthy').length,
-    error: records.filter((record) => record.status === 'available' && record.tokenStatus === 'error').length,
+    healthy: records.filter((record) => isUnsoldMailbox(record) && record.tokenStatus === 'healthy').length,
+    error: records.filter((record) => isUnsoldMailbox(record) && record.tokenStatus === 'error').length,
   }), [records]);
   const groups = useMemo(() => getMailboxGroups(records), [records]);
   const selectedGroup = useMemo(
@@ -176,9 +184,10 @@ function App() {
     [groups, selectedGroupKey],
   );
 
-  const availableRecords = useMemo(() => {
+  const visibleUnsoldRecords = useMemo(() => {
     return records
-      .filter((record) => record.status === 'available')
+      .filter(isUnsoldMailbox)
+      .filter((record) => inventoryView === 'unsold' || record.status === inventoryView)
       .filter((record) => {
         if (!selectedGroup) {
           return true;
@@ -192,10 +201,15 @@ function App() {
           return true;
         }
 
-        return record.email.toLowerCase().includes(needle) || record.domain.includes(needle);
+        return (
+          record.email.toLowerCase().includes(needle) ||
+          record.domain.includes(needle) ||
+          (record.preparedFor ?? '').toLowerCase().includes(needle) ||
+          (record.preparationRemark ?? '').toLowerCase().includes(needle)
+        );
       })
       .sort((a, b) => a.email.localeCompare(b.email));
-  }, [records, search, selectedGroup]);
+  }, [inventoryView, records, search, selectedGroup]);
 
   const usedRecords = useMemo(
     () =>
@@ -218,7 +232,7 @@ function App() {
   );
 
   const selectedMailbox = useMemo(
-    () => records.find((record) => record.id === selectedMailboxId && record.status === 'available'),
+    () => records.find((record) => record.id === selectedMailboxId && isUnsoldMailbox(record)),
     [records, selectedMailboxId],
   );
 
@@ -226,8 +240,21 @@ function App() {
     if (selectedMailboxId && !selectedMailbox) {
       setSelectedMailboxId('');
       setRemark('');
+      setPreparationService('Perplexity');
+      setPreparationRemark('');
     }
   }, [selectedMailbox, selectedMailboxId]);
+
+  useEffect(() => {
+    if (selectedMailbox && inventoryView !== 'unsold' && selectedMailbox.status !== inventoryView) {
+      setSelectedMailboxId('');
+    }
+  }, [inventoryView, selectedMailbox]);
+
+  useEffect(() => {
+    setPreparationService(selectedMailbox?.preparedFor || 'Perplexity');
+    setPreparationRemark(selectedMailbox?.preparationRemark || '');
+  }, [selectedMailboxId, selectedMailbox?.preparedFor, selectedMailbox?.preparationRemark]);
 
   useEffect(() => {
     setMailMessages([]);
@@ -297,11 +324,67 @@ function App() {
     const picked = pickRandomAvailable(records, {
       firstLetter: selectedGroup?.firstLetter,
       domain: selectedGroup?.domain,
+      status: inventoryView,
     });
 
     if (picked) {
       setSelectedMailboxId(picked.id);
       setRemark('');
+    }
+  }
+
+  async function handleMarkPrepared() {
+    if (!selectedMailbox || selectedMailbox.status !== 'available' || !preparationService.trim()) {
+      return;
+    }
+
+    const optimisticRecords = markMailboxPrepared(
+      records,
+      selectedMailbox.id,
+      preparationService,
+      preparationRemark,
+    );
+    setRecords(optimisticRecords);
+    setIsBusy(true);
+    setSyncStatus('正在写入准备状态...');
+
+    try {
+      const nextRecords = await markRecordPrepared(
+        selectedMailbox.id,
+        preparationService,
+        preparationRemark,
+      );
+      setRecords(nextRecords);
+      setSyncStatus('已标记为准备状态');
+    } catch (error) {
+      await refreshRecords();
+      setSyncStatus(getErrorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleUndoPrepared() {
+    if (!selectedMailbox || selectedMailbox.status !== 'prepared') {
+      return;
+    }
+    if (!window.confirm('确定撤销准备状态吗？邮箱会回到“待准备”库存，准备记录将被清除。')) {
+      return;
+    }
+
+    setRecords(markMailboxAvailable(records, selectedMailbox.id));
+    setIsBusy(true);
+    setSyncStatus('正在撤销准备状态...');
+
+    try {
+      const nextRecords = await unprepareRecord(selectedMailbox.id);
+      setRecords(nextRecords);
+      setSyncStatus('邮箱已回到待准备库存');
+    } catch (error) {
+      await refreshRecords();
+      setSyncStatus(getErrorMessage(error));
+    } finally {
+      setIsBusy(false);
     }
   }
 
@@ -427,7 +510,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'available-outlook-mailboxes.txt';
+    link.download = 'unsold-outlook-mailboxes.txt';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -436,7 +519,7 @@ function App() {
 
   async function handleCopyAvailable() {
     const copied = await writeClipboardText(exportAvailableMailboxes(records));
-    setCopyStatus(copied ? '全部有效邮箱已复制' : '复制失败，请手动选中文本复制');
+    setCopyStatus(copied ? '全部未售邮箱已复制' : '复制失败，请手动选中文本复制');
     window.setTimeout(() => setCopyStatus(''), 1600);
   }
 
@@ -483,7 +566,7 @@ function App() {
       <section className="topbar">
         <div>
           <h1>Outlook 邮箱运营台</h1>
-          <p>库存、发货、OAuth Token 与完整收件箱，共用一份账号台账。</p>
+          <p>库存准备、发货、OAuth Token 与完整收件箱，共用一份账号台账。</p>
         </div>
         <div className="topbar-actions">
           <input ref={fileInputRef} type="file" accept=".txt,text/plain" onChange={handleFileChange} hidden />
@@ -491,13 +574,13 @@ function App() {
             <Upload size={17} />
             导入 TXT
           </button>
-          <button className="button" onClick={handleExport} disabled={stats.available === 0 || isBusy}>
+          <button className="button" onClick={handleExport} disabled={stats.unsold === 0 || isBusy}>
             <Download size={17} />
-            导出有效邮箱
+            导出未售邮箱
           </button>
-          <button className="button" onClick={handleCopyAvailable} disabled={stats.available === 0 || isBusy}>
+          <button className="button" onClick={handleCopyAvailable} disabled={stats.unsold === 0 || isBusy}>
             <Clipboard size={17} />
-            复制有效邮箱
+            复制未售邮箱
           </button>
           <button className="button" onClick={handleCopyShippingNote}>
             <Clipboard size={17} />
@@ -507,7 +590,7 @@ function App() {
             <Clipboard size={17} />
             复制 CDK 声明
           </button>
-          <button className="button" onClick={handleBatchRefresh} disabled={batchBusy || isBusy || stats.available === 0}>
+          <button className="button" onClick={handleBatchRefresh} disabled={batchBusy || isBusy || stats.unsold === 0}>
             <RefreshCcw size={17} />
             刷新 25 个未售 Token
           </button>
@@ -519,7 +602,8 @@ function App() {
 
       <section className="stats-grid" aria-label="库存概览">
         <StatCard icon={<Database size={19} />} label="全部邮箱" value={stats.total} />
-        <StatCard icon={<Inbox size={19} />} label="可用库存" value={stats.available} tone="good" />
+        <StatCard icon={<Inbox size={19} />} label="待准备" value={stats.available} />
+        <StatCard icon={<ShieldCheck size={19} />} label="已准备" value={stats.prepared} tone="prepared" />
         <StatCard icon={<Check size={19} />} label="已使用" value={stats.used} tone="used" />
         <StatCard icon={<FileText size={19} />} label="outlook.com / .es" value={`${stats.outlookCom} / ${stats.outlookEs}`} />
         <StatCard icon={<ShieldCheck size={19} />} label="Token 正常" value={tokenStats.healthy} tone="good" />
@@ -529,7 +613,7 @@ function App() {
       <section className="toolbar">
         <div className="search-box">
           <Search size={17} />
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索邮箱、后缀或备注" />
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索邮箱、后缀、准备服务或备注" />
         </div>
         <button className="button subtle" onClick={() => importText(SAMPLE_TEXT)} disabled={isBusy}>
           <RefreshCcw size={16} />
@@ -583,8 +667,8 @@ function App() {
             </div>
             <GroupButton
               active={selectedGroupKey === 'all'}
-              label="全部可用"
-              detail={`${stats.available} 个`}
+              label="全部未售"
+              detail={`待准备 ${stats.available} / 已准备 ${stats.prepared}`}
               onClick={() => setSelectedGroupKey('all')}
             />
             <div className="group-list">
@@ -593,8 +677,8 @@ function App() {
                   key={group.key}
                   active={selectedGroupKey === group.key}
                   label={`${group.firstLetter} · ${group.domain}`}
-                  detail={`可用 ${group.availableCount} / 已用 ${group.usedCount}`}
-                  disabled={group.availableCount === 0}
+                  detail={`待准备 ${group.availableCount} / 已准备 ${group.preparedCount} / 已用 ${group.usedCount}`}
+                  disabled={group.availableCount + group.preparedCount === 0}
                   onClick={() => setSelectedGroupKey(group.key)}
                 />
               ))}
@@ -604,28 +688,35 @@ function App() {
           <section className="available-panel">
             <div className="panel-header">
               <div>
-                <h2>可用邮箱池</h2>
-                <p>{selectedGroup ? `${selectedGroup.firstLetter} · ${selectedGroup.domain}` : '全部分组'}，当前 {availableRecords.length} 个可用</p>
+                <h2>未售邮箱池</h2>
+                <p>{selectedGroup ? `${selectedGroup.firstLetter} · ${selectedGroup.domain}` : '全部分组'}，当前显示 {visibleUnsoldRecords.length} 个</p>
               </div>
-              <button className="button primary" onClick={handlePickRandom} disabled={availableRecords.length === 0 || isBusy}>
-                <Shuffle size={17} />
-                随机抽取
-              </button>
+              <div className="panel-header-actions">
+                <div className="inventory-tabs" aria-label="库存状态筛选">
+                  <button className={inventoryView === 'unsold' ? 'active' : ''} type="button" onClick={() => setInventoryView('unsold')}>全部未售</button>
+                  <button className={inventoryView === 'available' ? 'active' : ''} type="button" onClick={() => setInventoryView('available')}>待准备</button>
+                  <button className={inventoryView === 'prepared' ? 'active' : ''} type="button" onClick={() => setInventoryView('prepared')}>已准备</button>
+                </div>
+                <button className="button primary" onClick={handlePickRandom} disabled={visibleUnsoldRecords.length === 0 || isBusy}>
+                  <Shuffle size={17} />
+                  随机抽取
+                </button>
+              </div>
             </div>
 
             <div className={`split-grid ${selectedMailbox ? 'has-selection' : ''}`}>
-              <div className="mailbox-list" aria-label="可用邮箱列表">
-                {availableRecords.length === 0 ? (
-                  <div className="soft-empty">当前筛选下没有可用邮箱。</div>
+              <div className="mailbox-list" aria-label="未售邮箱列表">
+                {visibleUnsoldRecords.length === 0 ? (
+                  <div className="soft-empty">当前筛选下没有邮箱。</div>
                 ) : (
-                  availableRecords.slice(0, 80).map((record) => (
+                  visibleUnsoldRecords.slice(0, 80).map((record) => (
                     <button
                       key={record.id}
                       className={`mailbox-row ${selectedMailboxId === record.id ? 'selected' : ''}`}
                       onClick={() => setSelectedMailboxId(record.id)}
                     >
                       <span>{record.email}</span>
-                      <small>{record.domain}</small>
+                      <small>{record.domain} · {record.status === 'prepared' ? `已准备：${record.preparedFor}` : '待准备'}</small>
                     </button>
                   ))
                 )}
@@ -636,7 +727,9 @@ function App() {
                   <>
                     <div className="detail-heading">
                       <h3>{selectedMailbox.email}</h3>
-                      <span>{selectedMailbox.firstLetter} · {selectedMailbox.domain} · Token {formatTokenStatus(selectedMailbox)}</span>
+                      <span>
+                        {selectedMailbox.firstLetter} · {selectedMailbox.domain} · {selectedMailbox.status === 'prepared' ? `已准备：${selectedMailbox.preparedFor}` : '待准备'} · Token {formatTokenStatus(selectedMailbox)}
+                      </span>
                     </div>
 
                     <section className="mail-tools" aria-label="邮件收取">
@@ -687,6 +780,60 @@ function App() {
                       {mailMessages.length ? <MailResults messages={mailMessages} onCopy={copyText} /> : null}
                     </section>
 
+                    <section className={`preparation-card ${selectedMailbox.status}`} aria-label="免费账号准备状态">
+                      {selectedMailbox.status === 'available' ? (
+                        <>
+                          <div className="preparation-heading">
+                            <div>
+                              <strong>免费账号准备</strong>
+                              <span>在第三方网站完成免费账号注册后，在这里确认并留档。</span>
+                            </div>
+                            <span className="status-pill pending">待准备</span>
+                          </div>
+                          <div className="preparation-form">
+                            <label>
+                              <span>服务</span>
+                              <input
+                                value={preparationService}
+                                onChange={(event) => setPreparationService(event.target.value)}
+                                placeholder="例如：Perplexity"
+                                autoComplete="off"
+                              />
+                            </label>
+                            <label>
+                              <span>准备备注（可选）</span>
+                              <input
+                                value={preparationRemark}
+                                onChange={(event) => setPreparationRemark(event.target.value)}
+                                placeholder="例如：免费账号已注册并验证"
+                                autoComplete="off"
+                              />
+                            </label>
+                          </div>
+                          <button className="button prepared full" type="button" onClick={handleMarkPrepared} disabled={!preparationService.trim() || isBusy}>
+                            <ShieldCheck size={17} />
+                            确认已注册，标记为准备状态
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <div className="preparation-heading">
+                            <div>
+                              <strong>{selectedMailbox.preparedFor} 免费账号已准备</strong>
+                              <span>
+                                {selectedMailbox.preparedAt ? new Date(selectedMailbox.preparedAt).toLocaleString('zh-CN') : '准备时间未知'}
+                                {selectedMailbox.preparationRemark ? ` · ${selectedMailbox.preparationRemark}` : ''}
+                              </span>
+                            </div>
+                            <span className="status-pill prepared">已准备</span>
+                          </div>
+                          <button className="button subtle" type="button" onClick={handleUndoPrepared} disabled={isBusy}>
+                            撤销准备状态
+                          </button>
+                        </>
+                      )}
+                    </section>
+
                     <div className="mobile-action-grid" aria-label="手机发货操作">
                       <button className="button primary" type="button" onClick={() => copyText('用户名', selectedMailbox.email)}>
                         <Clipboard size={17} />
@@ -708,7 +855,7 @@ function App() {
                     {copyStatus ? <span className="detail-copy-status" role="status" aria-live="polite">{copyStatus}</span> : null}
 
                     <label className="remark-field">
-                      <span>使用备注</span>
+                      <span>发货 / 使用备注</span>
                       <textarea
                         value={remark}
                         onChange={(event) => setRemark(event.target.value)}
@@ -719,7 +866,7 @@ function App() {
                     </label>
                     <button className="button primary full mark-used-button" type="button" onClick={handleMarkUsed} disabled={!remark.trim() || isBusy}>
                       <Check size={17} />
-                      标记为已使用
+                      标记为已使用（已售出）
                     </button>
 
                     <CredentialField label="用户名" value={selectedMailbox.email} onCopy={copyText} />
@@ -754,6 +901,7 @@ function App() {
                   <article className="used-row" key={record.id}>
                     <strong>{record.email}</strong>
                     <span>{record.remark || '未填写备注'}</span>
+                    {record.preparedFor ? <span className="used-preparation">售出前已准备：{record.preparedFor}</span> : null}
                     <small>{record.usedAt ? new Date(record.usedAt).toLocaleString('zh-CN') : `原 TXT 第 ${record.sourceLineNumber} 行`}</small>
                   </article>
                 ))
@@ -786,7 +934,7 @@ interface StatCardProps {
   icon: React.ReactNode;
   label: string;
   value: number | string;
-  tone?: 'good' | 'used' | 'danger';
+  tone?: 'good' | 'prepared' | 'used' | 'danger';
 }
 
 function StatCard({ icon, label, value, tone }: StatCardProps) {
@@ -893,7 +1041,7 @@ function EmptyState({ onImport, onSample }: { onImport: () => void; onSample: ()
     <section className="empty-state">
       <FileText size={42} />
       <h2>导入你的邮箱 TXT 开始管理</h2>
-      <p>应用会识别行尾 `【备注】` 为已使用邮箱，其余进入可用池。数据保存在服务器共享台账，所有设备读取同一份记录。</p>
+      <p>应用会识别行尾 `【备注】` 为已使用邮箱，其余进入待准备库存。数据保存在服务器共享台账，所有设备读取同一份记录。</p>
       <div className="empty-actions">
         <button className="button primary" onClick={onImport}>
           <Upload size={17} />
@@ -979,6 +1127,30 @@ async function markRecordUsed(id: string, nextRemark: string): Promise<MailboxRe
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ remark: nextRemark }),
+  });
+  const payload = await readApiResponse(response);
+  return payload.records;
+}
+
+async function markRecordPrepared(
+  id: string,
+  preparedFor: string,
+  preparationRemark: string,
+): Promise<MailboxRecord[]> {
+  const response = await fetch(`/api/records/${encodeURIComponent(id)}/prepare`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ preparedFor, preparationRemark }),
+  });
+  const payload = await readApiResponse(response);
+  return payload.records;
+}
+
+async function unprepareRecord(id: string): Promise<MailboxRecord[]> {
+  const response = await fetch(`/api/records/${encodeURIComponent(id)}/unprepare`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
   });
   const payload = await readApiResponse(response);
   return payload.records;

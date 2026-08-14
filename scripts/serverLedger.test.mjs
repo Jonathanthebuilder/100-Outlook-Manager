@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createLedgerStore,
   handleLedgerRequest,
+  isUnsoldRecord,
   readJsonBody,
   sendJson,
   validateRecords,
@@ -72,6 +73,21 @@ describe('server ledger store', () => {
     const invalidRecords = [{ id: 'missing-fields' }];
 
     expect(() => validateRecords(invalidRecords)).toThrow(/Invalid mailbox record/);
+  });
+
+  it('accepts prepared records as unsold inventory only when preparation metadata is complete', () => {
+    const prepared = {
+      ...makeRecord('prepared-1'),
+      status: 'prepared',
+      preparedFor: 'Perplexity',
+      preparationRemark: '免费账号已注册',
+      preparedAt: '2026-08-14T09:00:00.000Z',
+    };
+
+    expect(validateRecords([prepared])).toEqual([prepared]);
+    expect(isUnsoldRecord(prepared)).toBe(true);
+    expect(isUnsoldRecord({ ...prepared, status: 'used' })).toBe(false);
+    expect(() => validateRecords([{ ...prepared, preparedFor: '' }])).toThrow(/Invalid mailbox record/);
   });
 });
 
@@ -287,6 +303,71 @@ describe('server ledger API handler', () => {
       status: 'used',
       remark: '交给 Alex 使用',
       usedAt: '2026-06-20T09:30:00.000Z',
+    });
+  });
+
+  it('moves an available mailbox into and out of prepared inventory', async () => {
+    const store = await makeTempStore();
+    await store.save([makeRecord('alice-1')]);
+
+    const prepareResponse = createResponse();
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/alice-1/prepare', {
+        preparedFor: 'Perplexity',
+        preparationRemark: '免费账号已注册',
+      }),
+      prepareResponse,
+      store,
+      () => '2026-08-14T09:00:00.000Z',
+    );
+
+    expect(prepareResponse.statusCode).toBe(200);
+    expect(JSON.parse(prepareResponse.body).records[0]).toMatchObject({
+      status: 'prepared',
+      preparedFor: 'Perplexity',
+      preparationRemark: '免费账号已注册',
+      preparedAt: '2026-08-14T09:00:00.000Z',
+    });
+
+    const unprepareResponse = createResponse();
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/alice-1/unprepare', {}),
+      unprepareResponse,
+      store,
+    );
+
+    const restored = JSON.parse(unprepareResponse.body).records[0];
+    expect(unprepareResponse.statusCode).toBe(200);
+    expect(restored.status).toBe('available');
+    expect(restored).not.toHaveProperty('preparedFor');
+    expect(restored).not.toHaveProperty('preparedAt');
+  });
+
+  it('allows a prepared mailbox to be marked as used while retaining preparation history', async () => {
+    const store = await makeTempStore();
+    await store.save([{
+      ...makeRecord('alice-1'),
+      status: 'prepared',
+      preparedFor: 'Perplexity',
+      preparationRemark: '免费账号已注册',
+      preparedAt: '2026-08-14T09:00:00.000Z',
+    }]);
+
+    const response = createResponse();
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/alice-1/use', { remark: 'Order 1001' }),
+      response,
+      store,
+      () => '2026-08-14T10:00:00.000Z',
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).records[0]).toMatchObject({
+      status: 'used',
+      preparedFor: 'Perplexity',
+      preparedAt: '2026-08-14T09:00:00.000Z',
+      remark: 'Order 1001',
+      usedAt: '2026-08-14T10:00:00.000Z',
     });
   });
 

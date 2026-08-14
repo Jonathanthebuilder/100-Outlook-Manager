@@ -1,4 +1,5 @@
-export type MailboxStatus = 'available' | 'used';
+export type MailboxStatus = 'available' | 'prepared' | 'used';
+export type UnsoldMailboxStatus = Exclude<MailboxStatus, 'used'>;
 export type TokenStatus = 'unknown' | 'healthy' | 'error';
 
 export interface MailboxRecord {
@@ -11,6 +12,9 @@ export interface MailboxRecord {
   firstLetter: string;
   status: MailboxStatus;
   remark: string;
+  preparedFor?: string;
+  preparationRemark?: string;
+  preparedAt?: string;
   usedAt?: string;
   importedAt?: string;
   tokenCheckedAt?: string;
@@ -37,17 +41,21 @@ export interface MailboxGroup {
   firstLetter: string;
   domain: string;
   availableCount: number;
+  preparedCount: number;
   usedCount: number;
 }
 
 export interface PickFilters {
   firstLetter?: string;
   domain?: string;
+  status?: UnsoldMailboxStatus | 'unsold';
 }
 
 export interface InventoryStats {
   total: number;
   available: number;
+  prepared: number;
+  unsold: number;
   used: number;
   outlookCom: number;
   outlookEs: number;
@@ -109,7 +117,7 @@ export function parseMailboxText(text: string): ParsedMailboxFile {
 
 export function exportAvailableMailboxes(records: MailboxRecord[]): string {
   return records
-    .filter((record) => record.status === 'available')
+    .filter(isUnsoldMailbox)
     .map(formatMailboxCredential)
     .join('\n');
 }
@@ -130,11 +138,14 @@ export function getMailboxGroups(records: MailboxRecord[]): MailboxGroup[] {
         firstLetter: record.firstLetter,
         domain: record.domain,
         availableCount: 0,
+        preparedCount: 0,
         usedCount: 0,
       };
 
     if (record.status === 'available') {
       current.availableCount += 1;
+    } else if (record.status === 'prepared') {
+      current.preparedCount += 1;
     } else {
       current.usedCount += 1;
     }
@@ -154,7 +165,11 @@ export function pickRandomAvailable(
   random: () => number = Math.random,
 ): MailboxRecord | undefined {
   const candidates = records.filter((record) => {
-    if (record.status !== 'available') {
+    if (!isUnsoldMailbox(record)) {
+      return false;
+    }
+
+    if (filters.status && filters.status !== 'unsold' && record.status !== filters.status) {
       return false;
     }
 
@@ -175,6 +190,55 @@ export function pickRandomAvailable(
 
   const index = Math.min(Math.floor(random() * candidates.length), candidates.length - 1);
   return candidates[index];
+}
+
+export function isUnsoldMailbox(record: MailboxRecord): boolean {
+  return record.status === 'available' || record.status === 'prepared';
+}
+
+export function markMailboxPrepared(
+  records: MailboxRecord[],
+  id: string,
+  preparedFor: string,
+  preparationRemark: string = '',
+  preparedAt: string = new Date().toISOString(),
+): MailboxRecord[] {
+  const normalizedService = preparedFor.trim();
+  const normalizedRemark = preparationRemark.trim();
+
+  return records.map((record) => {
+    if (record.id !== id || record.status !== 'available') {
+      return record;
+    }
+
+    return {
+      ...record,
+      status: 'prepared',
+      preparedFor: normalizedService,
+      preparationRemark: normalizedRemark,
+      preparedAt,
+    };
+  });
+}
+
+export function markMailboxAvailable(records: MailboxRecord[], id: string): MailboxRecord[] {
+  return records.map((record) => {
+    if (record.id !== id || record.status !== 'prepared') {
+      return record;
+    }
+
+    const {
+      preparedFor: _preparedFor,
+      preparationRemark: _preparationRemark,
+      preparedAt: _preparedAt,
+      ...rest
+    } = record;
+
+    return {
+      ...rest,
+      status: 'available',
+    };
+  });
 }
 
 export function markMailboxUsed(
@@ -206,6 +270,10 @@ export function getInventoryStats(records: MailboxRecord[]): InventoryStats {
 
       if (record.status === 'available') {
         stats.available += 1;
+        stats.unsold += 1;
+      } else if (record.status === 'prepared') {
+        stats.prepared += 1;
+        stats.unsold += 1;
       } else {
         stats.used += 1;
       }
@@ -220,7 +288,7 @@ export function getInventoryStats(records: MailboxRecord[]): InventoryStats {
 
       return stats;
     },
-    { total: 0, available: 0, used: 0, outlookCom: 0, outlookEs: 0 },
+    { total: 0, available: 0, prepared: 0, unsold: 0, used: 0, outlookCom: 0, outlookEs: 0 },
   );
 }
 
