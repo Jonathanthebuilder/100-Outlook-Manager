@@ -1,11 +1,14 @@
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clipboard,
   Database,
   Download,
   FileText,
   Inbox,
+  KeyRound,
   ListFilter,
   MailOpen,
   RefreshCcw,
@@ -147,6 +150,7 @@ function App() {
   const [parseErrors, setParseErrors] = useState<ReturnType<typeof parseMailboxText>['errors']>([]);
   const [selectedGroupKey, setSelectedGroupKey] = useState<string>('all');
   const [selectedMailboxId, setSelectedMailboxId] = useState<string>('');
+  const [expandedUsedRecordId, setExpandedUsedRecordId] = useState<string>('');
   const [inventoryView, setInventoryView] = useState<InventoryView>('unsold');
   const [remark, setRemark] = useState('');
   const [preparationService, setPreparationService] = useState('Perplexity');
@@ -897,14 +901,49 @@ function App() {
               {usedRecords.length === 0 ? (
                 <div className="soft-empty">还没有已使用记录。</div>
               ) : (
-                usedRecords.map((record) => (
-                  <article className="used-row" key={record.id}>
-                    <strong>{record.email}</strong>
-                    <span>{record.remark || '未填写备注'}</span>
-                    {record.preparedFor ? <span className="used-preparation">售出前已准备：{record.preparedFor}</span> : null}
-                    <small>{record.usedAt ? new Date(record.usedAt).toLocaleString('zh-CN') : `原 TXT 第 ${record.sourceLineNumber} 行`}</small>
-                  </article>
-                ))
+                usedRecords.map((record) => {
+                  const isExpanded = expandedUsedRecordId === record.id;
+                  return (
+                    <article className={`used-row ${isExpanded ? 'expanded' : ''}`} key={record.id}>
+                      <div className="used-row-summary">
+                        <div className="used-row-copy">
+                          <strong>{record.email}</strong>
+                          <span>{record.remark || '未填写备注'}</span>
+                          {record.preparedFor ? <span className="used-preparation">售出前已准备：{record.preparedFor}</span> : null}
+                          <small>{record.usedAt ? new Date(record.usedAt).toLocaleString('zh-CN') : `原 TXT 第 ${record.sourceLineNumber} 行`}</small>
+                        </div>
+                        <button
+                          className="button mini used-credential-toggle"
+                          type="button"
+                          aria-expanded={isExpanded}
+                          aria-controls={`used-credentials-${record.id}`}
+                          onClick={() => setExpandedUsedRecordId(isExpanded ? '' : record.id)}
+                        >
+                          <KeyRound size={15} />
+                          {isExpanded ? '收起凭据' : '查看凭据'}
+                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                        </button>
+                      </div>
+
+                      {isExpanded ? (
+                        <div className="used-credentials" id={`used-credentials-${record.id}`}>
+                          <div className="used-credentials-notice">
+                            <KeyRound size={17} />
+                            <span>仅用于补发登录凭据；已售账号仍然禁止读取邮件和刷新 Token。</span>
+                          </div>
+                          {copyStatus ? <span className="used-copy-status" role="status" aria-live="polite">{copyStatus}</span> : null}
+                          <div className="used-credential-grid">
+                            <CredentialField label="用户名" value={record.email} onCopy={copyText} />
+                            <CredentialField label="密码" value={record.password} onCopy={copyText} />
+                            <CredentialField label="client_id" value={record.clientId} onCopy={copyText} />
+                            <CredentialField label="refresh_token" value={record.refreshToken} onCopy={copyText} multiline />
+                          </div>
+                          <CompleteCredentialField value={formatMailboxCredential(record)} onCopy={copyText} />
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })
               )}
             </div>
           </aside>

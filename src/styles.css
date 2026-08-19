@@ -1051,6 +1051,75 @@ button {
   background: #fbfcfd;
 }
 
+.used-row.expanded {
+  grid-column: 1 / -1;
+  gap: 14px;
+  border-color: #cfc7e7;
+  background: #fdfcff;
+  box-shadow: 0 10px 28px rgba(86, 63, 130, 0.08);
+}
+
+.used-row-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.used-row-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.used-credential-toggle {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding-inline: 10px;
+  color: #5c477f;
+  white-space: nowrap;
+}
+
+.used-credentials {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e0ef;
+}
+
+.used-credentials-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #ddd4ef;
+  border-radius: 9px;
+  background: #f6f2fc;
+  color: #604b81;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.used-credentials-notice svg {
+  flex: 0 0 auto;
+}
+
+.used-copy-status {
+  color: #167545;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.used-credential-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.used-credential-grid .credential-field.multiline {
+  grid-column: 1 / -1;
+}
+
 .used-row strong {
   overflow-wrap: anywhere;
   color: #22313c;
@@ -1284,6 +1353,14 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .used-credential-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .used-credential-grid .credential-field.multiline {
+    grid-column: auto;
+  }
+
   .credential-field {
     position: relative;
     padding-right: 54px;
@@ -1306,6 +1383,15 @@ button {
 }
 
 @media (max-width: 560px) {
+  .used-row-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .used-credential-toggle {
+    width: 100%;
+  }
+
   .panel-header-actions {
     align-items: stretch;
     flex-direction: column;
