@@ -12,6 +12,7 @@ import {
   ListFilter,
   MailOpen,
   RefreshCcw,
+  RotateCcw,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -161,6 +162,7 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [mailBusy, setMailBusy] = useState(false);
   const [batchBusy, setBatchBusy] = useState(false);
+  const [rollbackBusyRecordId, setRollbackBusyRecordId] = useState('');
   const [mailMessages, setMailMessages] = useState<MailboxMessage[]>([]);
   const [mailKeyword, setMailKeyword] = useState('');
   const [mailFolder, setMailFolder] = useState<'ALL' | 'INBOX' | 'Junk'>('ALL');
@@ -413,6 +415,30 @@ function App() {
       setSyncStatus(getErrorMessage(error));
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function handleRollbackSale(record: MailboxRecord) {
+    const destination = record.preparedFor && record.preparedAt ? '已准备' : '待准备';
+    if (!window.confirm(
+      `仅在账号尚未实际交付时使用。\n\n确定将 ${record.email} 撤回到“${destination}”库存吗？\n撤回后将重新允许收信和刷新 Token。`,
+    )) return;
+
+    setRollbackBusyRecordId(record.id);
+    setSyncStatus(`正在撤回 ${record.email}...`);
+    try {
+      const payload = await rollbackRecordSale(record.id);
+      setRecords(payload.records);
+      setExpandedUsedRecordId('');
+      setSelectedGroupKey('all');
+      setInventoryView(payload.restoredStatus);
+      setSelectedMailboxId(record.id);
+      setRemark('');
+      setSyncStatus(`已撤回到“${payload.restoredStatus === 'prepared' ? '已准备' : '待准备'}”库存，现在可以重新收信`);
+    } catch (error) {
+      setSyncStatus(getErrorMessage(error));
+    } finally {
+      setRollbackBusyRecordId('');
     }
   }
 
@@ -912,17 +938,29 @@ function App() {
                           {record.preparedFor ? <span className="used-preparation">售出前已准备：{record.preparedFor}</span> : null}
                           <small>{record.usedAt ? new Date(record.usedAt).toLocaleString('zh-CN') : `原 TXT 第 ${record.sourceLineNumber} 行`}</small>
                         </div>
-                        <button
-                          className="button mini used-credential-toggle"
-                          type="button"
-                          aria-expanded={isExpanded}
-                          aria-controls={`used-credentials-${record.id}`}
-                          onClick={() => setExpandedUsedRecordId(isExpanded ? '' : record.id)}
-                        >
-                          <KeyRound size={15} />
-                          {isExpanded ? '收起凭据' : '查看凭据'}
-                          {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                        </button>
+                        <div className="used-row-actions">
+                          <button
+                            className="button mini used-credential-toggle"
+                            type="button"
+                            aria-expanded={isExpanded}
+                            aria-controls={`used-credentials-${record.id}`}
+                            onClick={() => setExpandedUsedRecordId(isExpanded ? '' : record.id)}
+                          >
+                            <KeyRound size={15} />
+                            {isExpanded ? '收起凭据' : '查看凭据'}
+                            {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                          </button>
+                          <button
+                            className="button mini rollback-sale-button"
+                            type="button"
+                            onClick={() => void handleRollbackSale(record)}
+                            disabled={Boolean(rollbackBusyRecordId)}
+                            title="仅用于尚未实际交付的误标账号"
+                          >
+                            <RotateCcw size={15} />
+                            {rollbackBusyRecordId === record.id ? '正在撤回' : '撤回到未售'}
+                          </button>
+                        </div>
                       </div>
 
                       {isExpanded ? (
@@ -1169,6 +1207,23 @@ async function markRecordUsed(id: string, nextRemark: string): Promise<MailboxRe
   });
   const payload = await readApiResponse(response);
   return payload.records;
+}
+
+async function rollbackRecordSale(id: string): Promise<{
+  records: MailboxRecord[];
+  restoredStatus: 'available' | 'prepared';
+}> {
+  const response = await fetch(`/api/records/${encodeURIComponent(id)}/rollback-sale`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || '撤回已售状态失败');
+  if (!Array.isArray(payload.records) || !['available', 'prepared'].includes(payload.restoredStatus)) {
+    throw new Error('撤回接口返回格式不正确');
+  }
+  return payload;
 }
 
 async function markRecordPrepared(

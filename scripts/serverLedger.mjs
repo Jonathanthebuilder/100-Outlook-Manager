@@ -533,6 +533,43 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
       return true;
     }
 
+    const rollbackSaleMatch = parsedUrl.pathname.match(/^\/api\/records\/([^/]+)\/rollback-sale$/);
+    if (req.method === 'POST' && rollbackSaleMatch) {
+      const id = decodeURIComponent(rollbackSaleMatch[1]);
+      let restoredStatus = 'available';
+      const updatedRecords = await store.update((records) => {
+        const record = records.find((candidate) => candidate.id === id);
+
+        if (!record) {
+          const error = new Error('Mailbox record not found');
+          error.statusCode = 404;
+          error.records = records;
+          throw error;
+        }
+
+        if (record.status !== 'used') {
+          const error = new Error('只有已售账号才能撤回到未售库存');
+          error.statusCode = 409;
+          error.records = records;
+          throw error;
+        }
+
+        restoredStatus = record.preparedFor && record.preparedAt ? 'prepared' : 'available';
+        return records.map((candidate) => {
+          if (candidate.id !== id) return candidate;
+          const { usedAt: _usedAt, ...rest } = candidate;
+          return {
+            ...rest,
+            status: restoredStatus,
+            remark: '',
+          };
+        });
+      });
+
+      sendJson(res, 200, { records: updatedRecords, restoredStatus });
+      return true;
+    }
+
     if (parsedUrl.pathname.startsWith('/api/')) {
       sendJson(res, 404, { error: 'API route not found' });
       return true;

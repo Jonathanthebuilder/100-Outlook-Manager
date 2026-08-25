@@ -1080,6 +1080,25 @@ button {
   white-space: nowrap;
 }
 
+.used-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+}
+
+.rollback-sale-button {
+  min-height: 34px;
+  padding-inline: 10px;
+  border-color: #e5c9b4;
+  color: #985522;
+  white-space: nowrap;
+}
+
+.rollback-sale-button:hover:not(:disabled) {
+  border-color: #dba97e;
+  background: #fff7ef;
+}
+
 .used-credentials {
   display: grid;
   gap: 10px;
@@ -1389,6 +1408,15 @@ button {
   }
 
   .used-credential-toggle {
+    width: 100%;
+  }
+
+  .used-row-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .rollback-sale-button {
     width: 100%;
   }
 

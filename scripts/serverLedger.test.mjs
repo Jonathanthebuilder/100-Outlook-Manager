@@ -429,4 +429,77 @@ describe('server ledger API handler', () => {
     expect(response.statusCode).toBe(409);
     expect(JSON.parse(response.body).records[0].remark).toBe('已交付');
   });
+
+  it('rolls an accidentally sold mailbox back to available inventory', async () => {
+    const store = await makeTempStore();
+    await store.save([
+      {
+        id: 'sold-1',
+        email: 'SoldExample@outlook.com',
+        password: 'pass-one',
+        clientId: 'client-a',
+        refreshToken: 'refresh-token-a',
+        domain: 'outlook.com',
+        firstLetter: 'S',
+        status: 'used',
+        remark: 'Order 1001',
+        usedAt: '2026-08-25T05:00:00.000Z',
+        sourceLineNumber: 1,
+        rawCredential: 'SoldExample@outlook.com----pass-one----client-a----refresh-token-a',
+      },
+    ]);
+    const response = createResponse();
+
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/sold-1/rollback-sale', {}),
+      response,
+      store,
+    );
+
+    const payload = JSON.parse(response.body);
+    expect(response.statusCode).toBe(200);
+    expect(payload.restoredStatus).toBe('available');
+    expect(payload.records[0]).toMatchObject({ status: 'available', remark: '' });
+    expect(payload.records[0]).not.toHaveProperty('usedAt');
+  });
+
+  it('restores a previously prepared mailbox to prepared inventory', async () => {
+    const store = await makeTempStore();
+    await store.save([
+      {
+        id: 'prepared-sold-1',
+        email: 'PreparedSold@outlook.com',
+        password: 'pass-one',
+        clientId: 'client-a',
+        refreshToken: 'refresh-token-a',
+        domain: 'outlook.com',
+        firstLetter: 'P',
+        status: 'used',
+        remark: 'Order 1002',
+        preparedFor: 'Perplexity',
+        preparedAt: '2026-08-24T08:00:00.000Z',
+        usedAt: '2026-08-25T05:00:00.000Z',
+        sourceLineNumber: 1,
+        rawCredential: 'PreparedSold@outlook.com----pass-one----client-a----refresh-token-a',
+      },
+    ]);
+    const response = createResponse();
+
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/prepared-sold-1/rollback-sale', {}),
+      response,
+      store,
+    );
+
+    const payload = JSON.parse(response.body);
+    expect(response.statusCode).toBe(200);
+    expect(payload.restoredStatus).toBe('prepared');
+    expect(payload.records[0]).toMatchObject({
+      status: 'prepared',
+      preparedFor: 'Perplexity',
+      preparedAt: '2026-08-24T08:00:00.000Z',
+      remark: '',
+    });
+    expect(payload.records[0]).not.toHaveProperty('usedAt');
+  });
 });
