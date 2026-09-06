@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -111,6 +111,264 @@ describe('Token refresh target selection', () => {
     });
 
     expect(selected.map((record) => record.id)).toEqual(['batch-a-unknown']);
+  });
+
+  it('selects only healthy unsold mailboxes whose last successful check is due', () => {
+    const records = [
+      { ...makeRecord('missing-check'), tokenStatus: 'healthy' },
+      { ...makeRecord('oldest-healthy'), tokenStatus: 'healthy', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+      { ...makeRecord('boundary-healthy'), tokenStatus: 'healthy', tokenCheckedAt: '2026-08-08T12:00:00.000Z' },
+      { ...makeRecord('recent-healthy'), tokenStatus: 'healthy', tokenCheckedAt: '2026-08-20T00:00:00.000Z' },
+      { ...makeRecord('old-error'), tokenStatus: 'error', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+      { ...makeRecord('old-sold'), tokenStatus: 'healthy', tokenCheckedAt: '2026-07-01T00:00:00.000Z', status: 'used' },
+    ];
+
+    const selected = selectRefreshTargets(records, {
+      limit: 30,
+      tokenStatuses: ['healthy'],
+      checkedBefore: '2026-08-08T12:00:00.000Z',
+    });
+
+    expect(selected.map((record) => record.id)).toEqual([
+      'missing-check',
+      'oldest-healthy',
+      'boundary-healthy',
+    ]);
+  });
+});
+
+describe('automatic Token maintenance', () => {
+  it('refreshes only due healthy unsold mailboxes and persists rotated credentials', async () => {
+    const ledgerModule = await import('./serverLedger.mjs');
+    expect(ledgerModule.createAutomaticTokenMaintainer).toBeTypeOf('function');
+    if (!ledgerModule.createAutomaticTokenMaintainer) return;
+
+    const dir = await mkdtemp(join(tmpdir(), 'outlook-maintenance-'));
+    tempDirs.push(dir);
+    const store = createLedgerStore(join(dir, 'ledger.json'));
+    const stateFilePath = join(dir, 'token-maintenance.json');
+    await store.save([
+      { ...makeRecord('due-available'), tokenStatus: 'healthy', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+      {
+        ...makeRecord('due-prepared'),
+        status: 'prepared',
+        preparedFor: 'Perplexity',
+        preparedAt: '2026-08-01T00:00:00.000Z',
+        tokenStatus: 'healthy',
+        tokenCheckedAt: '2026-07-02T00:00:00.000Z',
+      },
+      { ...makeRecord('recent-available'), tokenStatus: 'healthy', tokenCheckedAt: '2026-08-20T00:00:00.000Z' },
+      { ...makeRecord('due-error'), tokenStatus: 'error', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+      { ...makeRecord('due-sold'), status: 'used', tokenStatus: 'healthy', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+    ]);
+
+    const maintainer = ledgerModule.createAutomaticTokenMaintainer({
+      store,
+      stateFilePath,
+      refreshToken: async (_clientId, refreshToken) => ({ refreshToken: `${refreshToken}-rotated` }),
+      now: () => '2026-09-07T12:00:00.000Z',
+      batchSize: 30,
+      maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+      minimumRunIntervalMs: 23 * 60 * 60 * 1000,
+      pauseMs: 0,
+    });
+
+    await expect(maintainer.runIfDue()).resolves.toMatchObject({
+      status: 'completed',
+      total: 2,
+      successCount: 2,
+      failureCount: 0,
+    });
+
+    const records = await store.load();
+    expect(records.find((record) => record.id === 'due-available')).toMatchObject({
+      refreshToken: 'refresh-token-a-rotated',
+      rawCredential: 'due@outlook.com----pass-one----client-a----refresh-token-a-rotated',
+      tokenStatus: 'healthy',
+      tokenCheckedAt: '2026-09-07T12:00:00.000Z',
+      tokenRefreshedAt: '2026-09-07T12:00:00.000Z',
+    });
+    expect(records.find((record) => record.id === 'recent-available')?.refreshToken).toBe('refresh-token-a');
+    expect(records.find((record) => record.id === 'due-error')?.refreshToken).toBe('refresh-token-a');
+    expect(records.find((record) => record.id === 'due-sold')?.refreshToken).toBe('refresh-token-a');
+
+    const state = JSON.parse(await readFile(stateFilePath, 'utf8'));
+    expect(state).toMatchObject({
+      lastRunAt: '2026-09-07T12:00:00.000Z',
+      status: 'completed',
+      total: 2,
+      successCount: 2,
+      failureCount: 0,
+    });
+  });
+
+  it('persists the daily run time so a service restart cannot run another batch too soon', async () => {
+    const ledgerModule = await import('./serverLedger.mjs');
+    const dir = await mkdtemp(join(tmpdir(), 'outlook-maintenance-interval-'));
+    tempDirs.push(dir);
+    const store = createLedgerStore(join(dir, 'ledger.json'));
+    const stateFilePath = join(dir, 'token-maintenance.json');
+    await store.save([
+      { ...makeRecord('due-once'), tokenStatus: 'healthy', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+    ]);
+
+    const firstMaintainer = ledgerModule.createAutomaticTokenMaintainer({
+      store,
+      stateFilePath,
+      refreshToken: async (_clientId, refreshToken) => ({ refreshToken }),
+      now: () => '2026-09-07T12:00:00.000Z',
+      minimumRunIntervalMs: 23 * 60 * 60 * 1000,
+      pauseMs: 0,
+    });
+    await firstMaintainer.runIfDue();
+
+    const restartedMaintainer = ledgerModule.createAutomaticTokenMaintainer({
+      store,
+      stateFilePath,
+      refreshToken: async (_clientId, refreshToken) => ({ refreshToken }),
+      now: () => '2026-09-07T13:00:00.000Z',
+      minimumRunIntervalMs: 23 * 60 * 60 * 1000,
+      pauseMs: 0,
+    });
+
+    await expect(restartedMaintainer.runIfDue()).resolves.toEqual({
+      status: 'skipped',
+      reason: 'interval-not-elapsed',
+      lastRunAt: '2026-09-07T12:00:00.000Z',
+    });
+  });
+
+  it('rejects an overlapping maintenance run before it can start another refresh', async () => {
+    const ledgerModule = await import('./serverLedger.mjs');
+    const dir = await mkdtemp(join(tmpdir(), 'outlook-maintenance-lock-'));
+    tempDirs.push(dir);
+    const store = createLedgerStore(join(dir, 'ledger.json'));
+    await store.save([
+      { ...makeRecord('due-locked'), tokenStatus: 'healthy', tokenCheckedAt: '2026-07-01T00:00:00.000Z' },
+    ]);
+
+    let releaseRefresh;
+    let signalStarted;
+    const refreshStarted = new Promise((resolve) => { signalStarted = resolve; });
+    const refreshGate = new Promise((resolve) => { releaseRefresh = resolve; });
+    const maintainer = ledgerModule.createAutomaticTokenMaintainer({
+      store,
+      stateFilePath: join(dir, 'token-maintenance.json'),
+      refreshToken: async (_clientId, refreshToken) => {
+        signalStarted();
+        await refreshGate;
+        return { refreshToken };
+      },
+      now: () => '2026-09-07T12:00:00.000Z',
+      pauseMs: 0,
+    });
+
+    const firstRun = maintainer.runIfDue();
+    await refreshStarted;
+    await expect(maintainer.runIfDue()).resolves.toEqual({
+      status: 'skipped',
+      reason: 'already-running',
+    });
+    releaseRefresh();
+    await firstRun;
+  });
+
+  it('quarantines a failed Token and continues refreshing the remaining due inventory', async () => {
+    const ledgerModule = await import('./serverLedger.mjs');
+    const dir = await mkdtemp(join(tmpdir(), 'outlook-maintenance-failure-'));
+    tempDirs.push(dir);
+    const store = createLedgerStore(join(dir, 'ledger.json'));
+    await store.save([
+      {
+        ...makeRecord('bad-token'),
+        refreshToken: 'invalid-token',
+        rawCredential: 'bad@outlook.com----pass-one----client-a----invalid-token',
+        tokenStatus: 'healthy',
+        tokenCheckedAt: '2026-07-01T00:00:00.000Z',
+      },
+      {
+        ...makeRecord('good-token'),
+        refreshToken: 'valid-token',
+        rawCredential: 'good@outlook.com----pass-one----client-a----valid-token',
+        tokenStatus: 'healthy',
+        tokenCheckedAt: '2026-07-02T00:00:00.000Z',
+      },
+    ]);
+    const maintainer = ledgerModule.createAutomaticTokenMaintainer({
+      store,
+      stateFilePath: join(dir, 'token-maintenance.json'),
+      refreshToken: async (_clientId, refreshToken) => {
+        if (refreshToken === 'invalid-token') throw new Error('grant expired');
+        return { refreshToken: 'valid-token-rotated' };
+      },
+      now: () => '2026-09-07T12:00:00.000Z',
+      pauseMs: 0,
+    });
+
+    await expect(maintainer.runIfDue()).resolves.toMatchObject({
+      status: 'completed',
+      total: 2,
+      successCount: 1,
+      failureCount: 1,
+    });
+
+    const records = await store.load();
+    expect(records.find((record) => record.id === 'bad-token')).toMatchObject({
+      refreshToken: 'invalid-token',
+      tokenStatus: 'error',
+      tokenCheckedAt: '2026-09-07T12:00:00.000Z',
+      tokenError: 'grant expired',
+    });
+    expect(records.find((record) => record.id === 'good-token')).toMatchObject({
+      refreshToken: 'valid-token-rotated',
+      tokenStatus: 'healthy',
+      tokenCheckedAt: '2026-09-07T12:00:00.000Z',
+    });
+  });
+
+  it('schedules an initial maintenance check and recurring hourly checks', async () => {
+    const ledgerModule = await import('./serverLedger.mjs');
+    expect(ledgerModule.startAutomaticTokenMaintenanceScheduler).toBeTypeOf('function');
+    if (!ledgerModule.startAutomaticTokenMaintenanceScheduler) return;
+
+    const scheduled = {};
+    const cleared = [];
+    let runCount = 0;
+    const results = [];
+    const scheduler = ledgerModule.startAutomaticTokenMaintenanceScheduler({
+      maintainer: {
+        async runIfDue() {
+          runCount += 1;
+          return { status: 'completed', total: 1, successCount: 1, failureCount: 0 };
+        },
+      },
+      initialDelayMs: 60_000,
+      pollIntervalMs: 60 * 60 * 1000,
+      setTimeoutFn(callback, delay) {
+        scheduled.initial = { callback, delay };
+        return 'initial-timer';
+      },
+      setIntervalFn(callback, delay) {
+        scheduled.interval = { callback, delay };
+        return 'interval-timer';
+      },
+      clearTimeoutFn(timer) { cleared.push(timer); },
+      clearIntervalFn(timer) { cleared.push(timer); },
+      onResult(result) { results.push(result); },
+    });
+
+    expect(scheduled.initial.delay).toBe(60_000);
+    expect(scheduled.interval.delay).toBe(60 * 60 * 1000);
+    await scheduled.initial.callback();
+    await scheduled.interval.callback();
+    expect(runCount).toBe(2);
+    expect(results).toEqual([
+      { status: 'completed', total: 1, successCount: 1, failureCount: 0 },
+      { status: 'completed', total: 1, successCount: 1, failureCount: 0 },
+    ]);
+
+    scheduler.stop();
+    expect(cleared).toEqual(['initial-timer', 'interval-timer']);
   });
 });
 

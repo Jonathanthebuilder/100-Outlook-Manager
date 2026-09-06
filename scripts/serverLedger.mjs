@@ -98,6 +98,8 @@ export function selectRefreshTargets(records, options = {}) {
   const limit = Math.min(Math.max(Number.parseInt(options.limit, 10) || 25, 1), 100);
   const importedAt = String(options.importedAt || '').trim();
   const clientId = String(options.clientId || '').trim();
+  const checkedBefore = String(options.checkedBefore || '').trim();
+  const checkedBeforeTime = Date.parse(checkedBefore);
   const tokenStatuses = new Set(
     Array.isArray(options.tokenStatuses)
       ? options.tokenStatuses.filter((status) => ['unknown', 'healthy', 'error'].includes(status))
@@ -109,6 +111,11 @@ export function selectRefreshTargets(records, options = {}) {
     .filter((record) => !importedAt || record.importedAt === importedAt)
     .filter((record) => !clientId || record.clientId === clientId)
     .filter((record) => tokenStatuses.size === 0 || tokenStatuses.has(record.tokenStatus || 'unknown'))
+    .filter((record) => {
+      if (!Number.isFinite(checkedBeforeTime)) return true;
+      const checkedAt = Date.parse(record.tokenCheckedAt || '');
+      return !Number.isFinite(checkedAt) || checkedAt <= checkedBeforeTime;
+    })
     .sort((left, right) => {
       const leftChecked = left.tokenCheckedAt || '';
       const rightChecked = right.tokenCheckedAt || '';
@@ -174,6 +181,154 @@ function updateTokenError(record, error, checkedAt) {
     tokenCheckedAt: checkedAt,
     tokenStatus: 'error',
     tokenError: error instanceof Error ? error.message : 'Token 操作失败',
+  };
+}
+
+async function loadMaintenanceState(filePath) {
+  try {
+    return JSON.parse(await readFile(filePath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+async function saveMaintenanceState(filePath, state) {
+  await mkdir(dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  await rename(tempPath, filePath);
+}
+
+export function createAutomaticTokenMaintainer({
+  store,
+  stateFilePath,
+  refreshToken = refreshOAuthToken,
+  now = () => new Date().toISOString(),
+  batchSize = 30,
+  maxAgeMs = 30 * 24 * 60 * 60 * 1000,
+  minimumRunIntervalMs = 23 * 60 * 60 * 1000,
+  pauseMs = 1_000,
+}) {
+  let activeRun;
+
+  async function executeRun() {
+    const startedAt = now();
+    const startedAtTime = Date.parse(startedAt);
+    const state = await loadMaintenanceState(stateFilePath);
+    const previousRunTime = Date.parse(state.lastRunAt || '');
+
+    if (Number.isFinite(previousRunTime) && startedAtTime - previousRunTime < minimumRunIntervalMs) {
+      return {
+        status: 'skipped',
+        reason: 'interval-not-elapsed',
+        lastRunAt: state.lastRunAt,
+      };
+    }
+
+    const checkedBefore = new Date(startedAtTime - maxAgeMs).toISOString();
+    const targets = selectRefreshTargets(await store.load(), {
+      limit: batchSize,
+      tokenStatuses: ['healthy'],
+      checkedBefore,
+    });
+    const runningState = {
+      lastRunAt: startedAt,
+      status: 'running',
+      total: targets.length,
+      successCount: 0,
+      failureCount: 0,
+    };
+    await saveMaintenanceState(stateFilePath, runningState);
+
+    let successCount = 0;
+    let failureCount = 0;
+    for (const [index, target] of targets.entries()) {
+      if (index > 0 && pauseMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, pauseMs));
+      }
+
+      const current = (await store.load()).find((record) => record.id === target.id);
+      const stillDue = current && selectRefreshTargets([current], {
+        limit: 1,
+        tokenStatuses: ['healthy'],
+        checkedBefore,
+      }).length === 1;
+      if (!stillDue) continue;
+
+      const checkedAt = now();
+      try {
+        const token = await refreshToken(current.clientId, current.refreshToken);
+        await store.update((records) => records.map((record) => (
+          record.id === current.id && isUnsoldRecord(record)
+            ? updateTokenFields(record, token.refreshToken, checkedAt)
+            : record
+        )));
+        successCount += 1;
+      } catch (error) {
+        await store.update((records) => records.map((record) => (
+          record.id === current.id && isUnsoldRecord(record)
+            ? updateTokenError(record, error, checkedAt)
+            : record
+        )));
+        failureCount += 1;
+      }
+    }
+
+    const completedState = {
+      lastRunAt: startedAt,
+      completedAt: now(),
+      status: 'completed',
+      total: targets.length,
+      successCount,
+      failureCount,
+    };
+    await saveMaintenanceState(stateFilePath, completedState);
+    return completedState;
+  }
+
+  return {
+    runIfDue() {
+      if (activeRun) {
+        return Promise.resolve({ status: 'skipped', reason: 'already-running' });
+      }
+
+      activeRun = executeRun().finally(() => {
+        activeRun = undefined;
+      });
+      return activeRun;
+    },
+  };
+}
+
+export function startAutomaticTokenMaintenanceScheduler({
+  maintainer,
+  initialDelayMs = 60_000,
+  pollIntervalMs = 60 * 60 * 1000,
+  setTimeoutFn = setTimeout,
+  setIntervalFn = setInterval,
+  clearTimeoutFn = clearTimeout,
+  clearIntervalFn = clearInterval,
+  onResult = () => {},
+  onError = () => {},
+}) {
+  const run = async () => {
+    try {
+      onResult(await maintainer.runIfDue());
+    } catch (error) {
+      onError(error);
+    }
+  };
+  const initialTimer = setTimeoutFn(run, initialDelayMs);
+  const intervalTimer = setIntervalFn(run, pollIntervalMs);
+  initialTimer?.unref?.();
+  intervalTimer?.unref?.();
+
+  return {
+    stop() {
+      clearTimeoutFn(initialTimer);
+      clearIntervalFn(intervalTimer);
+    },
   };
 }
 

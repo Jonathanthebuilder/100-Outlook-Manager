@@ -4,7 +4,12 @@ import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAuthResult } from './serverAuth.mjs';
-import { createLedgerStore, handleLedgerRequest } from './serverLedger.mjs';
+import {
+  createAutomaticTokenMaintainer,
+  createLedgerStore,
+  handleLedgerRequest,
+  startAutomaticTokenMaintenanceScheduler,
+} from './serverLedger.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const dist = join(root, 'dist');
@@ -12,6 +17,19 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || '0.0.0.0';
 const dataDir = process.env.OUTLOOK_MANAGER_DATA_DIR || join(root, 'data');
 const ledgerStore = createLedgerStore(join(dataDir, 'ledger.json'));
+const automaticRefreshEnabled = /^(1|true|yes)$/i.test(process.env.AUTO_TOKEN_REFRESH_ENABLED || '');
+const automaticRefreshBatchSize = Math.min(
+  Math.max(Number.parseInt(process.env.AUTO_TOKEN_REFRESH_BATCH_SIZE || '30', 10) || 30, 1),
+  100,
+);
+const automaticRefreshMaxAgeDays = Math.max(
+  Number.parseInt(process.env.AUTO_TOKEN_REFRESH_MAX_AGE_DAYS || '30', 10) || 30,
+  1,
+);
+const automaticRefreshPauseMs = Math.max(
+  Number.parseInt(process.env.AUTO_TOKEN_REFRESH_PAUSE_MS || '1000', 10) || 1_000,
+  0,
+);
 
 const contentTypes = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -96,6 +114,34 @@ const server = createServer(async (req, res) => {
 
   await serveFile(res, join(dist, 'outlook-manager.html'));
 });
+
+let maintenanceScheduler;
+if (automaticRefreshEnabled) {
+  const maintainer = createAutomaticTokenMaintainer({
+    store: ledgerStore,
+    stateFilePath: join(dataDir, 'token-maintenance.json'),
+    batchSize: automaticRefreshBatchSize,
+    maxAgeMs: automaticRefreshMaxAgeDays * 24 * 60 * 60 * 1000,
+    pauseMs: automaticRefreshPauseMs,
+  });
+  maintenanceScheduler = startAutomaticTokenMaintenanceScheduler({
+    maintainer,
+    onResult(result) {
+      if (result.status !== 'completed') return;
+      console.log(
+        `Automatic Token maintenance completed: total=${result.total} success=${result.successCount} failure=${result.failureCount}`,
+      );
+    },
+    onError(error) {
+      console.error('Automatic Token maintenance failed:', error instanceof Error ? error.message : error);
+    },
+  });
+  console.log(
+    `Automatic Token maintenance enabled: batch=${automaticRefreshBatchSize}, maxAgeDays=${automaticRefreshMaxAgeDays}`,
+  );
+}
+
+server.on('close', () => maintenanceScheduler?.stop());
 
 server.listen(port, host, () => {
   console.log(`Outlook Manager is running at http://${host}:${port}`);
