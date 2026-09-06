@@ -36,10 +36,11 @@ OUTLOOK_MANAGER_DATA_DIR=/data
 AUTO_TOKEN_REFRESH_ENABLED=true
 AUTO_TOKEN_REFRESH_BATCH_SIZE=30
 AUTO_TOKEN_REFRESH_MAX_AGE_DAYS=30
+AUTO_TOKEN_REFRESH_MIN_INTERVAL_HOURS=23
 AUTO_TOKEN_REFRESH_PAUSE_MS=1000
 ```
 
-自动任务在服务启动一分钟后检查，此后每小时检查一次是否到了每日运行时间。每23小时最多执行一批，默认只处理30天以上未成功检查的 `available`/`prepared` 健康 Token，每批最多30个，逐个刷新并立即写回。已售、未验证和已隔离邮箱不会进入自动任务。运行状态保存在 `/data/token-maintenance.json`，因此服务重启不会重复执行当天批次。
+自动任务在服务启动一分钟后检查，此后每小时检查一次是否到了下一次运行时间。默认每23小时最多执行一批，只处理30天以上未成功检查的 `available`/`prepared` 健康 Token，每批最多30个，逐个刷新并立即写回。已售、未验证和已隔离邮箱不会进入自动任务。运行状态保存在 `/data/token-maintenance.json`，因此服务重启不会过早重复执行批次。
 
 同时给 Railway 服务挂载 Volume 到 `/data`。共享台账保存在：
 

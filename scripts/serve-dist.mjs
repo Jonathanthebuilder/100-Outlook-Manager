@@ -26,6 +26,10 @@ const automaticRefreshMaxAgeDays = Math.max(
   Number.parseInt(process.env.AUTO_TOKEN_REFRESH_MAX_AGE_DAYS || '30', 10) || 30,
   1,
 );
+const automaticRefreshMinIntervalHours = Math.max(
+  Number.parseInt(process.env.AUTO_TOKEN_REFRESH_MIN_INTERVAL_HOURS || '23', 10) || 23,
+  1,
+);
 const automaticRefreshPauseMs = Math.max(
   Number.parseInt(process.env.AUTO_TOKEN_REFRESH_PAUSE_MS || '1000', 10) || 1_000,
   0,
@@ -122,6 +126,7 @@ if (automaticRefreshEnabled) {
     stateFilePath: join(dataDir, 'token-maintenance.json'),
     batchSize: automaticRefreshBatchSize,
     maxAgeMs: automaticRefreshMaxAgeDays * 24 * 60 * 60 * 1000,
+    minimumRunIntervalMs: automaticRefreshMinIntervalHours * 60 * 60 * 1000,
     pauseMs: automaticRefreshPauseMs,
   });
   maintenanceScheduler = startAutomaticTokenMaintenanceScheduler({
@@ -137,7 +142,7 @@ if (automaticRefreshEnabled) {
     },
   });
   console.log(
-    `Automatic Token maintenance enabled: batch=${automaticRefreshBatchSize}, maxAgeDays=${automaticRefreshMaxAgeDays}`,
+    `Automatic Token maintenance enabled: batch=${automaticRefreshBatchSize}, maxAgeDays=${automaticRefreshMaxAgeDays}, minIntervalHours=${automaticRefreshMinIntervalHours}`,
   );
 }
 
