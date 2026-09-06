@@ -7,6 +7,7 @@ import {
   handleLedgerRequest,
   isUnsoldRecord,
   readJsonBody,
+  selectRefreshTargets,
   sendJson,
   validateRecords,
 } from './serverLedger.mjs';
@@ -88,6 +89,28 @@ describe('server ledger store', () => {
     expect(isUnsoldRecord(prepared)).toBe(true);
     expect(isUnsoldRecord({ ...prepared, status: 'used' })).toBe(false);
     expect(() => validateRecords([{ ...prepared, preparedFor: '' }])).toThrow(/Invalid mailbox record/);
+  });
+});
+
+describe('Token refresh target selection', () => {
+  it('selects only unverified unsold mailboxes from the requested import batch', () => {
+    const records = [
+      { ...makeRecord('batch-a-unknown'), importedAt: 'batch-a', clientId: 'client-a', tokenStatus: 'unknown' },
+      { ...makeRecord('batch-a-healthy'), importedAt: 'batch-a', clientId: 'client-a', tokenStatus: 'healthy' },
+      { ...makeRecord('batch-a-error'), importedAt: 'batch-a', clientId: 'client-a', tokenStatus: 'error' },
+      { ...makeRecord('batch-b-unknown'), importedAt: 'batch-b', clientId: 'client-a', tokenStatus: 'unknown' },
+      { ...makeRecord('other-client'), importedAt: 'batch-a', clientId: 'client-b', tokenStatus: 'unknown' },
+      { ...makeRecord('sold-unknown'), importedAt: 'batch-a', clientId: 'client-a', tokenStatus: 'unknown', status: 'used' },
+    ];
+
+    const selected = selectRefreshTargets(records, {
+      limit: 10,
+      importedAt: 'batch-a',
+      clientId: 'client-a',
+      tokenStatuses: ['unknown'],
+    });
+
+    expect(selected.map((record) => record.id)).toEqual(['batch-a-unknown']);
   });
 });
 
@@ -283,6 +306,8 @@ describe('server ledger API handler', () => {
         firstLetter: 'A',
         status: 'available',
         remark: '',
+        tokenStatus: 'healthy',
+        tokenCheckedAt: '2026-06-20T09:00:00.000Z',
         sourceLineNumber: 1,
         rawCredential: 'AliceExample1001@outlook.com----pass-one----client-a----refresh-token-a',
       },
@@ -308,7 +333,7 @@ describe('server ledger API handler', () => {
 
   it('moves an available mailbox into and out of prepared inventory', async () => {
     const store = await makeTempStore();
-    await store.save([makeRecord('alice-1')]);
+    await store.save([{ ...makeRecord('alice-1'), tokenStatus: 'healthy' }]);
 
     const prepareResponse = createResponse();
     await handleLedgerRequest(
@@ -343,6 +368,25 @@ describe('server ledger API handler', () => {
     expect(restored).not.toHaveProperty('preparedAt');
   });
 
+  it('rejects preparing a mailbox whose Token has not been verified', async () => {
+    const store = await makeTempStore();
+    await store.save([{ ...makeRecord('alice-1'), tokenStatus: 'unknown' }]);
+
+    const response = createResponse();
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/alice-1/prepare', {
+        preparedFor: 'Perplexity',
+        preparationRemark: '',
+      }),
+      response,
+      store,
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error).toContain('Token');
+    expect((await store.load())[0].status).toBe('available');
+  });
+
   it('allows a prepared mailbox to be marked as used while retaining preparation history', async () => {
     const store = await makeTempStore();
     await store.save([{
@@ -351,6 +395,8 @@ describe('server ledger API handler', () => {
       preparedFor: 'Perplexity',
       preparationRemark: '免费账号已注册',
       preparedAt: '2026-08-14T09:00:00.000Z',
+      tokenStatus: 'healthy',
+      tokenCheckedAt: '2026-08-14T09:30:00.000Z',
     }]);
 
     const response = createResponse();
@@ -369,6 +415,27 @@ describe('server ledger API handler', () => {
       remark: 'Order 1001',
       usedAt: '2026-08-14T10:00:00.000Z',
     });
+  });
+
+  it('rejects selling a mailbox when its last healthy Token check is older than 24 hours', async () => {
+    const store = await makeTempStore();
+    await store.save([{
+      ...makeRecord('alice-1'),
+      tokenStatus: 'healthy',
+      tokenCheckedAt: '2026-08-13T09:59:59.000Z',
+    }]);
+
+    const response = createResponse();
+    await handleLedgerRequest(
+      createJsonRequest('POST', '/api/records/alice-1/use', { remark: 'Order 1001' }),
+      response,
+      store,
+      () => '2026-08-14T10:00:00.000Z',
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).error).toContain('24 小时');
+    expect((await store.load())[0].status).toBe('available');
   });
 
   it('blocks mailbox reads for used records before making an upstream request', async () => {

@@ -4,6 +4,7 @@ import { createDeviceCode, fetchMailboxMessages, pollDeviceCode, refreshOAuthTok
 
 const maxBodyBytes = 10 * 1024 * 1024;
 const defaultOAuthClientId = process.env.OAUTH_CLIENT_ID || '9e5f94bc-e8a4-4e73-b8be-63364c29d753';
+const deliveryTokenMaxAgeMs = 24 * 60 * 60 * 1000;
 
 export function createLedgerStore(filePath) {
   let writeQueue = Promise.resolve();
@@ -91,6 +92,29 @@ export function validateRecords(records) {
 
 export function isUnsoldRecord(record) {
   return record?.status === 'available' || record?.status === 'prepared';
+}
+
+export function selectRefreshTargets(records, options = {}) {
+  const limit = Math.min(Math.max(Number.parseInt(options.limit, 10) || 25, 1), 100);
+  const importedAt = String(options.importedAt || '').trim();
+  const clientId = String(options.clientId || '').trim();
+  const tokenStatuses = new Set(
+    Array.isArray(options.tokenStatuses)
+      ? options.tokenStatuses.filter((status) => ['unknown', 'healthy', 'error'].includes(status))
+      : [],
+  );
+
+  return records
+    .filter(isUnsoldRecord)
+    .filter((record) => !importedAt || record.importedAt === importedAt)
+    .filter((record) => !clientId || record.clientId === clientId)
+    .filter((record) => tokenStatuses.size === 0 || tokenStatuses.has(record.tokenStatus || 'unknown'))
+    .sort((left, right) => {
+      const leftChecked = left.tokenCheckedAt || '';
+      const rightChecked = right.tokenCheckedAt || '';
+      return leftChecked.localeCompare(rightChecked) || left.email.localeCompare(right.email);
+    })
+    .slice(0, limit);
 }
 
 export function readJsonBody(req) {
@@ -302,14 +326,12 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
       const body = await readJsonBody(req);
       const max = Math.min(Math.max(Number.parseInt(body.limit, 10) || 25, 1), 100);
       const records = await store.load();
-      const targets = records
-        .filter(isUnsoldRecord)
-        .sort((left, right) => {
-          const leftChecked = left.tokenCheckedAt || '';
-          const rightChecked = right.tokenCheckedAt || '';
-          return leftChecked.localeCompare(rightChecked) || left.email.localeCompare(right.email);
-        })
-        .slice(0, max);
+      const targets = selectRefreshTargets(records, {
+        limit: max,
+        importedAt: body.importedAt,
+        clientId: body.clientId,
+        tokenStatuses: body.tokenStatuses,
+      });
       const successes = [];
       const failures = [];
       for (const target of targets) {
@@ -439,6 +461,12 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
           error.records = records;
           throw error;
         }
+        if (record.tokenStatus !== 'healthy') {
+          const error = new Error('Token 尚未验证或已失效，请先刷新或重新授权');
+          error.statusCode = 409;
+          error.records = records;
+          throw error;
+        }
 
         return records.map((candidate) => candidate.id === id
           ? {
@@ -500,6 +528,7 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
       }
 
       const id = decodeURIComponent(useMatch[1]);
+      const usedAt = now();
       const updatedRecords = await store.update((records) => {
         const record = records.find((candidate) => candidate.id === id);
 
@@ -517,13 +546,29 @@ export async function handleLedgerRequest(req, res, store, now = () => new Date(
           throw error;
         }
 
+        if (record.tokenStatus !== 'healthy') {
+          const error = new Error('Token 尚未验证或已失效，请先刷新或重新授权');
+          error.statusCode = 409;
+          error.records = records;
+          throw error;
+        }
+
+        const tokenCheckedAt = Date.parse(record.tokenCheckedAt || '');
+        const tokenAgeMs = Date.parse(usedAt) - tokenCheckedAt;
+        if (!Number.isFinite(tokenAgeMs) || tokenAgeMs < 0 || tokenAgeMs > deliveryTokenMaxAgeMs) {
+          const error = new Error('发货前必须完成 24 小时内的 Token 健康检查');
+          error.statusCode = 409;
+          error.records = records;
+          throw error;
+        }
+
         return records.map((candidate) =>
           candidate.id === id
             ? {
                 ...candidate,
                 status: 'used',
                 remark,
-                usedAt: now(),
+                usedAt,
               }
             : candidate,
         );

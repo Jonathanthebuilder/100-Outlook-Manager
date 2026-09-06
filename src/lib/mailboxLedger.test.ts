@@ -4,6 +4,7 @@ import {
   formatMailboxCredential,
   getInventoryStats,
   getMailboxGroups,
+  isReadyForDelivery,
   markMailboxAvailable,
   markMailboxPrepared,
   markMailboxUsed,
@@ -110,12 +111,47 @@ describe('mailbox ledger workflow helpers', () => {
     );
 
     const picked = pickRandomAvailable(
-      parsed.records,
+      parsed.records.map((record) => ({ ...record, tokenStatus: 'healthy' })),
       { firstLetter: 'A', domain: 'outlook.com' },
       () => 0.75,
     );
 
     expect(picked?.email).toBe('AmeliaExample4004@outlook.com');
+  });
+
+  it('never randomly selects an unverified or failed mailbox', () => {
+    const parsed = parseMailboxText(
+      [
+        alphaRaw,
+        'AmeliaExample4004@outlook.com----pass-four----client-d----refresh-token-d',
+        'AveryExample5005@outlook.com----pass-five----client-e----refresh-token-e',
+      ].join('\n'),
+    );
+    const records = parsed.records.map((record, index) => ({
+      ...record,
+      tokenStatus: index === 0 ? 'unknown' as const : index === 1 ? 'error' as const : 'healthy' as const,
+    }));
+
+    const picked = pickRandomAvailable(
+      records,
+      { firstLetter: 'A', domain: 'outlook.com' },
+      () => 0,
+    );
+
+    expect(picked?.email).toBe('AveryExample5005@outlook.com');
+  });
+
+  it('requires a healthy Token check within 24 hours for delivery', () => {
+    const [record] = parseMailboxText(alphaRaw).records;
+    const checkedRecord = {
+      ...record,
+      tokenStatus: 'healthy' as const,
+      tokenCheckedAt: '2026-09-05T12:00:00.000Z',
+    };
+
+    expect(isReadyForDelivery(checkedRecord, new Date('2026-09-06T12:00:00.000Z'))).toBe(true);
+    expect(isReadyForDelivery(checkedRecord, new Date('2026-09-06T12:00:00.001Z'))).toBe(false);
+    expect(isReadyForDelivery({ ...checkedRecord, tokenStatus: 'error' }, new Date('2026-09-05T12:30:00.000Z'))).toBe(false);
   });
 
   it('marks a mailbox as used without mutating the original list', () => {
@@ -134,8 +170,9 @@ describe('mailbox ledger workflow helpers', () => {
 
   it('moves a mailbox through prepared and available states with preparation metadata', () => {
     const parsed = parseMailboxText([alphaRaw].join('\n'));
+    const healthyRecords = parsed.records.map((record) => ({ ...record, tokenStatus: 'healthy' as const }));
     const prepared = markMailboxPrepared(
-      parsed.records,
+      healthyRecords,
       parsed.records[0].id,
       'Perplexity',
       '免费账号已注册',

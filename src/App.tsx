@@ -25,10 +25,12 @@ import {
   MailboxGroup,
   MailboxRecord,
   ParsedMailboxFile,
+  TokenStatus,
   exportAvailableMailboxes,
   formatMailboxCredential,
   getInventoryStats,
   getMailboxGroups,
+  isReadyForDelivery,
   isUnsoldMailbox,
   markMailboxAvailable,
   markMailboxPrepared,
@@ -143,6 +145,7 @@ interface DeviceCodeInfo {
 }
 
 type InventoryView = 'unsold' | 'available' | 'prepared';
+type TokenInventoryView = 'healthy' | 'unknown' | 'error' | 'all';
 
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -153,6 +156,7 @@ function App() {
   const [selectedMailboxId, setSelectedMailboxId] = useState<string>('');
   const [expandedUsedRecordId, setExpandedUsedRecordId] = useState<string>('');
   const [inventoryView, setInventoryView] = useState<InventoryView>('unsold');
+  const [tokenInventoryView, setTokenInventoryView] = useState<TokenInventoryView>('healthy');
   const [remark, setRemark] = useState('');
   const [preparationService, setPreparationService] = useState('Perplexity');
   const [preparationRemark, setPreparationRemark] = useState('');
@@ -183,6 +187,7 @@ function App() {
   const tokenStats = useMemo(() => ({
     healthy: records.filter((record) => isUnsoldMailbox(record) && record.tokenStatus === 'healthy').length,
     error: records.filter((record) => isUnsoldMailbox(record) && record.tokenStatus === 'error').length,
+    unknown: records.filter((record) => isUnsoldMailbox(record) && (record.tokenStatus ?? 'unknown') === 'unknown').length,
   }), [records]);
   const groups = useMemo(() => getMailboxGroups(records), [records]);
   const selectedGroup = useMemo(
@@ -194,6 +199,7 @@ function App() {
     return records
       .filter(isUnsoldMailbox)
       .filter((record) => inventoryView === 'unsold' || record.status === inventoryView)
+      .filter((record) => tokenInventoryView === 'all' || (record.tokenStatus ?? 'unknown') === tokenInventoryView)
       .filter((record) => {
         if (!selectedGroup) {
           return true;
@@ -215,7 +221,7 @@ function App() {
         );
       })
       .sort((a, b) => a.email.localeCompare(b.email));
-  }, [inventoryView, records, search, selectedGroup]);
+  }, [inventoryView, records, search, selectedGroup, tokenInventoryView]);
 
   const usedRecords = useMemo(
     () =>
@@ -241,6 +247,26 @@ function App() {
     () => records.find((record) => record.id === selectedMailboxId && isUnsoldMailbox(record)),
     [records, selectedMailboxId],
   );
+  const selectedMailboxReady = selectedMailbox ? isReadyForDelivery(selectedMailbox) : false;
+  const selectedBatchStats = useMemo(() => {
+    if (!selectedMailbox?.importedAt) return null;
+    const batch = records.filter((record) => (
+      isUnsoldMailbox(record)
+      && record.importedAt === selectedMailbox.importedAt
+      && record.clientId === selectedMailbox.clientId
+    ));
+    return {
+      total: batch.length,
+      healthy: batch.filter((record) => record.tokenStatus === 'healthy').length,
+      unknown: batch.filter((record) => (record.tokenStatus ?? 'unknown') === 'unknown').length,
+      error: batch.filter((record) => record.tokenStatus === 'error').length,
+    };
+  }, [records, selectedMailbox]);
+  const canPickRandom = useMemo(() => Boolean(pickRandomAvailable(records, {
+    firstLetter: selectedGroup?.firstLetter,
+    domain: selectedGroup?.domain,
+    status: inventoryView,
+  }, () => 0)), [inventoryView, records, selectedGroup]);
 
   useEffect(() => {
     if (selectedMailboxId && !selectedMailbox) {
@@ -334,13 +360,14 @@ function App() {
     });
 
     if (picked) {
+      setTokenInventoryView('healthy');
       setSelectedMailboxId(picked.id);
       setRemark('');
     }
   }
 
   async function handleMarkPrepared() {
-    if (!selectedMailbox || selectedMailbox.status !== 'available' || !preparationService.trim()) {
+    if (!selectedMailbox || selectedMailbox.status !== 'available' || selectedMailbox.tokenStatus !== 'healthy' || !preparationService.trim()) {
       return;
     }
 
@@ -395,7 +422,10 @@ function App() {
   }
 
   async function handleMarkUsed() {
-    if (!selectedMailbox || !remark.trim()) {
+    if (!selectedMailbox || !selectedMailboxReady || !remark.trim()) {
+      if (selectedMailbox && !selectedMailboxReady) {
+        setSyncStatus('发货前请先完成 Token 刷新，并确认检查时间在 24 小时内');
+      }
       return;
     }
 
@@ -491,6 +521,28 @@ function App() {
       const payload = await refreshAvailableTokens(25);
       setRecords(payload.records);
       setSyncStatus(`刷新完成：成功 ${payload.successCount}，失败 ${payload.failureCount}`);
+    } catch (error) {
+      setSyncStatus(getErrorMessage(error));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function handleBatchAudit() {
+    if (!selectedMailbox?.importedAt || !selectedBatchStats?.unknown) return;
+    const count = Math.min(10, selectedBatchStats.unknown);
+    if (!window.confirm(`只检测当前入库批次的 ${count} 个“未检测”邮箱；已售、正常和已知异常账号均会排除。确定继续吗？`)) return;
+
+    setBatchBusy(true);
+    setSyncStatus(`正在检测当前批次的 ${count} 个未验证 Token...`);
+    try {
+      const payload = await refreshAvailableTokens(count, {
+        importedAt: selectedMailbox.importedAt,
+        clientId: selectedMailbox.clientId,
+        tokenStatuses: ['unknown'],
+      });
+      setRecords(payload.records);
+      setSyncStatus(`当前批次检测完成：成功 ${payload.successCount}，失败 ${payload.failureCount}`);
     } catch (error) {
       setSyncStatus(getErrorMessage(error));
     } finally {
@@ -727,9 +779,33 @@ function App() {
                   <button className={inventoryView === 'available' ? 'active' : ''} type="button" onClick={() => setInventoryView('available')}>待准备</button>
                   <button className={inventoryView === 'prepared' ? 'active' : ''} type="button" onClick={() => setInventoryView('prepared')}>已准备</button>
                 </div>
-                <button className="button primary" onClick={handlePickRandom} disabled={visibleUnsoldRecords.length === 0 || isBusy}>
+                <button className="button primary" onClick={handlePickRandom} disabled={!canPickRandom || isBusy}>
                   <Shuffle size={17} />
-                  随机抽取
+                  随机抽取安全库存
+                </button>
+              </div>
+            </div>
+
+            <div className="safety-filter-bar" aria-label="Token 安全库存筛选">
+              <div className="safety-filter-copy">
+                <ShieldCheck size={18} />
+                <div>
+                  <strong>交付安全门</strong>
+                  <span>随机抽取只会选择 Token 已验证正常的邮箱</span>
+                </div>
+              </div>
+              <div className="token-filter-tabs">
+                <button className={tokenInventoryView === 'healthy' ? 'active healthy' : ''} type="button" onClick={() => setTokenInventoryView('healthy')}>
+                  安全库存 {tokenStats.healthy}
+                </button>
+                <button className={tokenInventoryView === 'unknown' ? 'active unknown' : ''} type="button" onClick={() => setTokenInventoryView('unknown')}>
+                  待检测 {tokenStats.unknown}
+                </button>
+                <button className={tokenInventoryView === 'error' ? 'active error' : ''} type="button" onClick={() => setTokenInventoryView('error')}>
+                  异常隔离 {tokenStats.error}
+                </button>
+                <button className={tokenInventoryView === 'all' ? 'active' : ''} type="button" onClick={() => setTokenInventoryView('all')}>
+                  全部未售 {stats.unsold}
                 </button>
               </div>
             </div>
@@ -742,11 +818,14 @@ function App() {
                   visibleUnsoldRecords.slice(0, 80).map((record) => (
                     <button
                       key={record.id}
-                      className={`mailbox-row ${selectedMailboxId === record.id ? 'selected' : ''}`}
+                      className={`mailbox-row token-${record.tokenStatus ?? 'unknown'} ${selectedMailboxId === record.id ? 'selected' : ''}`}
                       onClick={() => setSelectedMailboxId(record.id)}
                     >
                       <span>{record.email}</span>
-                      <small>{record.domain} · {record.status === 'prepared' ? `已准备：${record.preparedFor}` : '待准备'}</small>
+                      <small>
+                        {record.domain} · {record.status === 'prepared' ? `已准备：${record.preparedFor}` : '待准备'}
+                        <em>{record.tokenStatus === 'healthy' ? 'Token 正常' : record.tokenStatus === 'error' ? 'Token 异常' : 'Token 未检测'}</em>
+                      </small>
                     </button>
                   ))
                 )}
@@ -761,6 +840,50 @@ function App() {
                         {selectedMailbox.firstLetter} · {selectedMailbox.domain} · {selectedMailbox.status === 'prepared' ? `已准备：${selectedMailbox.preparedFor}` : '待准备'} · Token {formatTokenStatus(selectedMailbox)}
                       </span>
                     </div>
+
+                    <div className={`delivery-gate ${selectedMailbox.tokenStatus !== 'healthy' ? 'blocked' : selectedMailboxReady ? 'ready' : 'stale'}`}>
+                      {selectedMailbox.tokenStatus !== 'healthy' ? <ShieldAlert size={20} /> : <ShieldCheck size={20} />}
+                      <div>
+                        <strong>
+                          {selectedMailbox.tokenStatus === 'error'
+                            ? '已进入异常隔离'
+                            : selectedMailbox.tokenStatus !== 'healthy'
+                              ? '等待 Token 检测'
+                              : selectedMailboxReady
+                                ? '24 小时交付检查已通过'
+                                : '交付检查已经过期'}
+                        </strong>
+                        <span>
+                          {selectedMailbox.tokenStatus === 'error'
+                            ? '旧 Token 无法继续使用，请重新授权或向供应商换货。'
+                            : selectedMailbox.tokenStatus !== 'healthy'
+                              ? '先完成刷新；未验证邮箱不能进入准备状态或交付。'
+                              : selectedMailboxReady
+                                ? '当前可以进入准备流程；售出前仍建议先确认验证码收取正常。'
+                                : '最近一次成功检查已超过 24 小时，请刷新后再标记为已售。'}
+                        </span>
+                      </div>
+                      {!selectedMailboxReady ? (
+                        <button className="button mini" type="button" onClick={handleRefreshToken} disabled={mailBusy}>
+                          <RefreshCcw size={15} />
+                          立即刷新
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {selectedBatchStats ? (
+                      <div className="batch-audit-bar">
+                        <div>
+                          <span>当前入库批次 · {new Date(selectedMailbox.importedAt!).toLocaleDateString('zh-CN')}</span>
+                          <strong>{selectedBatchStats.total} 个未售</strong>
+                          <small>正常 {selectedBatchStats.healthy} · 待检测 {selectedBatchStats.unknown} · 异常 {selectedBatchStats.error}</small>
+                        </div>
+                        <button className="button mini" type="button" onClick={handleBatchAudit} disabled={batchBusy || selectedBatchStats.unknown === 0}>
+                          <ShieldCheck size={15} />
+                          {selectedBatchStats.unknown ? `检测本批次 ${Math.min(10, selectedBatchStats.unknown)} 个` : '本批次已检测完'}
+                        </button>
+                      </div>
+                    ) : null}
 
                     <section className="mail-tools" aria-label="邮件收取">
                       <div className="mail-tools-title">
@@ -840,7 +963,7 @@ function App() {
                               />
                             </label>
                           </div>
-                          <button className="button prepared full" type="button" onClick={handleMarkPrepared} disabled={!preparationService.trim() || isBusy}>
+                          <button className="button prepared full" type="button" onClick={handleMarkPrepared} disabled={selectedMailbox.tokenStatus !== 'healthy' || !preparationService.trim() || isBusy}>
                             <ShieldCheck size={17} />
                             确认已注册，标记为准备状态
                           </button>
@@ -894,7 +1017,8 @@ function App() {
                         autoComplete="off"
                       />
                     </label>
-                    <button className="button primary full mark-used-button" type="button" onClick={handleMarkUsed} disabled={!remark.trim() || isBusy}>
+                    {!selectedMailboxReady ? <p className="delivery-lock-note">标记为已售前，必须完成 24 小时内的 Token 健康检查。</p> : null}
+                    <button className="button primary full mark-used-button" type="button" onClick={handleMarkUsed} disabled={!selectedMailboxReady || !remark.trim() || isBusy}>
                       <Check size={17} />
                       标记为已使用（已售出）
                     </button>
@@ -1275,7 +1399,10 @@ async function refreshRecordToken(id: string): Promise<MailboxRecord[]> {
   return payload.records;
 }
 
-async function refreshAvailableTokens(limit: number): Promise<{
+async function refreshAvailableTokens(
+  limit: number,
+  scope: { importedAt?: string; clientId?: string; tokenStatuses?: TokenStatus[] } = {},
+): Promise<{
   records: MailboxRecord[];
   successCount: number;
   failureCount: number;
@@ -1283,7 +1410,7 @@ async function refreshAvailableTokens(limit: number): Promise<{
   const response = await fetch('/api/records/refresh-available', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ limit }),
+    body: JSON.stringify({ limit, ...scope }),
   });
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || '批量刷新失败');

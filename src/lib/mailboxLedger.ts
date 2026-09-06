@@ -63,6 +63,7 @@ export interface InventoryStats {
 
 const CREDENTIAL_PARTS = 4;
 const FORMAT_ERROR = '格式不符合 user----password----client_id----refresh_token';
+const DELIVERY_TOKEN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function parseMailboxText(text: string): ParsedMailboxFile {
   const records: MailboxRecord[] = [];
@@ -165,7 +166,7 @@ export function pickRandomAvailable(
   random: () => number = Math.random,
 ): MailboxRecord | undefined {
   const candidates = records.filter((record) => {
-    if (!isUnsoldMailbox(record)) {
+    if (!isUnsoldMailbox(record) || record.tokenStatus !== 'healthy') {
       return false;
     }
 
@@ -194,6 +195,16 @@ export function pickRandomAvailable(
 
 export function isUnsoldMailbox(record: MailboxRecord): boolean {
   return record.status === 'available' || record.status === 'prepared';
+}
+
+export function isReadyForDelivery(record: MailboxRecord, now: Date = new Date()): boolean {
+  if (!isUnsoldMailbox(record) || record.tokenStatus !== 'healthy') {
+    return false;
+  }
+
+  const tokenCheckedAt = Date.parse(record.tokenCheckedAt || '');
+  const tokenAgeMs = now.getTime() - tokenCheckedAt;
+  return Number.isFinite(tokenAgeMs) && tokenAgeMs >= 0 && tokenAgeMs <= DELIVERY_TOKEN_MAX_AGE_MS;
 }
 
 export function markMailboxPrepared(

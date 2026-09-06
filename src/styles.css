@@ -476,6 +476,85 @@ button {
   box-shadow: 0 3px 10px rgba(35, 62, 87, 0.09);
 }
 
+.safety-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 20px;
+  border-bottom: 1px solid #dfe7ed;
+  background: #f8fafb;
+}
+
+.safety-filter-copy {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  color: #365064;
+}
+
+.safety-filter-copy svg {
+  flex: 0 0 auto;
+  color: #167545;
+}
+
+.safety-filter-copy > div {
+  display: grid;
+  gap: 1px;
+}
+
+.safety-filter-copy strong {
+  font-size: 12px;
+}
+
+.safety-filter-copy span {
+  color: #71808d;
+  font-size: 11px;
+}
+
+.token-filter-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 5px;
+}
+
+.token-filter-tabs button {
+  min-height: 30px;
+  border: 1px solid #d8e1e8;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: #fff;
+  color: #657685;
+  font-size: 11px;
+  font-weight: 740;
+  cursor: pointer;
+}
+
+.token-filter-tabs button.active {
+  border-color: #aebdca;
+  background: #eaf0f5;
+  color: #30485a;
+}
+
+.token-filter-tabs button.active.healthy {
+  border-color: #a7d8c2;
+  background: #e7f6ee;
+  color: #176b48;
+}
+
+.token-filter-tabs button.active.unknown {
+  border-color: #e1c98f;
+  background: #fff7df;
+  color: #805c12;
+}
+
+.token-filter-tabs button.active.error {
+  border-color: #e5b5ac;
+  background: #fff0ed;
+  color: #9c352b;
+}
+
 .group-list {
   display: grid;
   gap: 8px;
@@ -567,9 +646,38 @@ button {
 }
 
 .mailbox-row small {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   color: #738290;
   line-height: 1.35;
+}
+
+.mailbox-row small em {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #edf2f6;
+  color: #596f80;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.mailbox-row.token-healthy small em {
+  background: #e5f5ec;
+  color: #176b48;
+}
+
+.mailbox-row.token-unknown small em {
+  background: #fff5d9;
+  color: #805c12;
+}
+
+.mailbox-row.token-error small em {
+  background: #ffebe7;
+  color: #9c352b;
 }
 
 .mailbox-row.selected {
@@ -600,6 +708,100 @@ button {
 .detail-heading span {
   color: #6b7b89;
   font-size: 13px;
+  font-weight: 700;
+}
+
+.delivery-gate {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  margin: -4px 0 12px;
+  padding: 12px 13px;
+  border: 1px solid #b8dfcb;
+  border-radius: 12px;
+  background: #eff9f4;
+  color: #176b48;
+}
+
+.delivery-gate.blocked {
+  border-color: #edbeb6;
+  background: #fff3f0;
+  color: #9b382e;
+}
+
+.delivery-gate.stale {
+  border-color: #e7ce93;
+  background: #fff9e9;
+  color: #805c12;
+}
+
+.delivery-gate > svg {
+  flex: 0 0 auto;
+}
+
+.delivery-gate > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.delivery-gate strong {
+  font-size: 13px;
+}
+
+.delivery-gate span {
+  color: #5e7168;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.delivery-gate.blocked span {
+  color: #7f5b55;
+}
+
+.delivery-gate.stale span {
+  color: #756848;
+}
+
+.batch-audit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid #dce5ec;
+  border-radius: 11px;
+  background: #fbfcfd;
+}
+
+.batch-audit-bar > div {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 10px;
+  align-items: baseline;
+}
+
+.batch-audit-bar span,
+.batch-audit-bar small {
+  color: #71808d;
+  font-size: 11px;
+}
+
+.batch-audit-bar strong {
+  color: #2c3d4a;
+  font-size: 13px;
+}
+
+.batch-audit-bar small {
+  grid-column: 1 / -1;
+}
+
+.delivery-lock-note {
+  margin: 0 0 8px;
+  color: #9b382e;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1311,6 +1513,25 @@ button {
     justify-content: space-between;
   }
 
+  .safety-filter-bar {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 11px 14px;
+  }
+
+  .token-filter-tabs {
+    flex-wrap: wrap;
+  }
+
+  .delivery-gate {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .delivery-gate .button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .preparation-form {
     grid-template-columns: 1fr;
   }
@@ -1433,6 +1654,20 @@ button {
 
   .inventory-tabs button {
     padding-inline: 6px;
+  }
+
+  .token-filter-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .token-filter-tabs button {
+    width: 100%;
+  }
+
+  .batch-audit-bar {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .mailbox-list {
